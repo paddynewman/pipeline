@@ -1,0 +1,7 @@
+# Pipeline data directory
+data*
+
+# Python bytecode / cache
+__pycache__/
+*.py[cod]
+*.pyo
