@@ -76,7 +76,3 @@ Viewing a build and its logs:
 
 ![build](build.png)
 
-Editing a job:
-
-![edit](edit.png)
-
