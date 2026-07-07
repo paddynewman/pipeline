@@ -1,21 +1,13 @@
-import argparse
+import os
 
-from .server import run_server
+from .web import run
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Pipeline automation server")
-    parser.add_argument(
-        "--host", default="0.0.0.0", help="Host to listen on (default: 0.0.0.0)"
-    )
-    parser.add_argument(
-        "--port", type=int, default=8080, help="Port to listen on (default: 8080)"
-    )
-    parser.add_argument(
-        "--data", default="./data", help="Data directory (default: ./data)"
-    )
-    args = parser.parse_args()
-    run_server(args.host, args.port, args.data)
+    host = os.getenv("PIPELINE_HOST", "0.0.0.0")
+    port = int(os.getenv("PIPELINE_PORT", "8080"))
+    debug = os.getenv("PIPELINE_DEBUG", "false").lower() == "true"
+    run(host=host, port=port, debug=debug)
 
 
 if __name__ == "__main__":

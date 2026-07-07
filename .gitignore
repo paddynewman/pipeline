@@ -1,7 +1,16 @@
-# Pipeline data directory
-data*
+data/
 
-# Python bytecode / cache
+# Python bytecode and cache directories
 __pycache__/
 *.py[cod]
-*.pyo
+*$py.class
+
+# Python tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pyre/
+.hypothesis/
+
+# Notebook checkpoints
+.ipynb_checkpoints/

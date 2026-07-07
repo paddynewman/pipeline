@@ -1,2 +1,1 @@
-# Pipeline version (SemVer)
-__version__ = "0.6.35"
+__version__ = "0.13.0"
