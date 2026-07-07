@@ -1,124 +1,82 @@
 # Pipeline
 
-Pipeline is a lightweight CI/CD console for Kubernetes workloads.
-It provides a web dashboard for managing applications, environments,
-templated deployments, and operational actions.
+A vibe-coded, pure-Python automation server, in the style of Jenkins, using
+only Python's standard library, a local Docker server and Git.
+
+This is not meant to be used in anger. It's a working demonstration that's
+intented to facilitate discussions about using AI to write code.
+
+## Getting started
+
+### Running a test server
+
+You can run the Pipeline server with your own user account from your home
+directory.
+
+Install Git and Docker on a Linux host.
+
+Clone the Git repository and then run the server:
+
+    $ ./start-pipeline
+    Pipeline listening on http://0.0.0.0:8080
+
+
+Make sure you start Pipeline as a user that has access to run Docker commands.
+
+All configuration and data is stored under the ./data directory.
+
+### Install using the Makefile
+
+Alternatively, there's a Makefile with an install and uninstall target, if you
+want to install it properly:
+
+    $ make install
+    $ make uninstall
+
+
+This will install Pipeline in /usr/libexec/pipeline and data will be stored in
+/usr/share/pipeline. You can change these locations easily in the Makefile.
 
 ## Features
 
-- Dashboard listing applications, labels, and state hints.
-- Application model with:
-	- Description
-	- Labels (name, value, description)
-	- Base templates (inline Kubernetes YAML)
-	- Base template variable defaults (YAML mapping)
-	- Namespace configurations (name, description, labels, kubeconfig)
-	- Environments (namespace plus instance-level variable overrides)
-- Promotion checks for missing template variables.
-- Deployment flow using Bottle template rendering and Kubernetes API apply logic.
-- Runtime view with workloads, warning events, logs, and namespace metadata.
-- Application-scoped operations section for workload discovery and scaling using configured namespaces.
-- Username/password login required for all console pages.
-- Local JSON-backed configuration in `data/*.json` with sorted keys and indentation.
+- Requires only the Python standard library, Docker and Git.
+- All configuration and data is stored on the local filesystem.
+- Log in, create and manage user accounts.
+- Simple role-based access controls (administrators, users and viewers).
+- Create jobs based on simple scripted steps.
+- Scripted steps run in ephemeral Docker containers.
+- Re-use a container (and its state) in multiple steps.
+  - E.g., install a package in step one, use it in step two.
+  - E.g., authenticate gcloud in step one, use it in step two.
+- Access the local Docker server from scripted steps.
+  - Allows you to build Docker images.
+- Configure job parameters with regular expression validation.
+- Configure credentials and use them in jobs.
+- Trigger jobs manually or with a cron-style schedule.
+- Re-run prevous builds of a job.
+- Checkout Git repositories.
+- Poll Git repositories for changes and trigger builds.
+- Live log updates for long-running jobs.
+- View or download files created by jobs.
+- Automatically remove old builds of a job.
+- Organise and filter jobs using labels.
+- Get weather reports indicating job stability.
+- Get email notifications when jobs fail.
 
-Application configurations are stored per app under:
+## Screenshots
 
-- `data/<application-name>/application.json`
+The main dashboard:
 
-## Requirements
+![Dashboard](dashbord.png)
 
-Install dependencies from `requirements.txt`:
+Viewing a job's details and build history:
 
-```bash
-pip install -r requirements.txt
-```
+![job](job.png)
 
-## Start
+Viewing a build and its logs:
 
-Simple start command:
+![build](build.png)
 
-```bash
-python run.py
-```
+Editing a job:
 
-Alternative module start:
-
-```bash
-python -m pipeline
-```
-
-Server defaults:
-
-- Host: `0.0.0.0`
-- Port: `8080`
-
-Optional environment variables:
-
-- `PIPELINE_HOST`
-- `PIPELINE_PORT`
-- `PIPELINE_DEBUG=true|false`
-- `PIPELINE_COOKIE_SECRET` (set this in non-dev environments)
-- `PIPELINE_COOKIE_SECURE=true|false` (set to `true` behind HTTPS)
-
-## Authentication
-
-- Users must log in to access the console.
-- User credentials are stored in `data/users.json` with PBKDF2 password hashes.
-- On first startup, if no users exist, Pipeline redirects to a first-time setup page to create the initial user.
-- Additional users can be created, removed, and have passwords reset from Settings.
-
-## Templates
-
-Create Bottle-based YAML templates in `templates/`.
-Example `templates/my-app.yaml.tpl`:
-
-```yaml
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-	name: my-app
-spec:
-	replicas: {{replicas}}
-	selector:
-		matchLabels:
-			app: my-app
-	template:
-		metadata:
-			labels:
-				app: my-app
-		spec:
-			containers:
-			- name: my-app
-				image: {{image}}
-```
-
-Configure templates from the application detail page using Template Config:
-
-- Application configuration owns templates and default variables.
-- Environment configuration owns only overrides:
-	- `variable_overrides`: override default template variable values for one environment.
-
-Deployments render templates with the merged context:
-
-- `effective_variables = application.variables + environment.variable_overrides`
-
-## Namespace Configuration
-
-- Add namespaces per application from the application detail page.
-- Edit existing namespace configuration from the application detail page.
-- Namespace forms require:
-	- Namespace name
-	- Description
-	- Labels (name/value/description rows in the console)
-	- Kubeconfig YAML (required)
-- Deployments and runtime operations for an environment use the kubeconfig configured for that environment's namespace.
-
-## Required Labels
-
-- Required labels are configured in Settings.
-- Each required label must include:
-	- Name
-	- Scope (`application` or `namespace`)
-	- Description
-- The description is shown on application and namespace forms wherever that label is required.
-
+![edit](edit.png)

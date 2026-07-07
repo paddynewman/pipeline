@@ -23,7 +23,7 @@ _FAVICON_HREF = "data:image/svg+xml," + urllib.parse.quote(_BRAND_ICON_SVG)
 
 
 _CSS = """
-*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; border-radius: 0; }
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
   font-size: 14px; line-height: 1.5; background: #f6f8fa; color: #24292f;
@@ -38,12 +38,12 @@ a:hover { text-decoration: underline; }
 }
 .brand { font-size: 17px; font-weight: 700; color: #f0f6fc; text-decoration: none; letter-spacing: 1px; }
 .brand:hover { text-decoration: none; color: #ffffff; }
-.topnav a { color: #8b949e; text-decoration: none; font-size: 13px; padding: 4px 8px; border-radius: 0; }
+.topnav a { color: #8b949e; text-decoration: none; font-size: 13px; padding: 4px 8px; border-radius: 6px; }
 .topnav a:hover { color: #f0f6fc; background: rgba(255,255,255,.08); text-decoration: none; }
 .topbar-spacer { flex: 1; }
 .user-menu { position: relative; display: inline-block; }
 .user-menu-btn {
-  background: none; border: 1px solid rgba(255,255,255,.2); border-radius: 0;
+  background: none; border: 1px solid rgba(255,255,255,.2); border-radius: 6px;
   color: #c9d1d9; font-size: 13px; padding: 4px 10px; cursor: pointer;
   display: flex; align-items: center; gap: 6px;
 }
@@ -51,7 +51,7 @@ a:hover { text-decoration: underline; }
 .user-menu-btn::after { content: ''; display: inline-block; border-top: 4px solid currentColor; border-left: 4px solid transparent; border-right: 4px solid transparent; }
 .user-dropdown {
   display: none; position: absolute; right: 0; top: calc(100% + 6px);
-  background: #2d333b; border: 1px solid #444c56; border-radius: 0;
+  background: #2d333b; border: 1px solid #444c56; border-radius: 8px;
   min-width: 140px; box-shadow: 0 4px 12px rgba(0,0,0,.4); z-index: 200;
 }
 .user-dropdown a {
@@ -76,11 +76,14 @@ a:hover { text-decoration: underline; }
 }
 .page-header h1 { font-size: 20px; font-weight: 600; }
 .page-header .actions { display: flex; gap: 8px; }
+.job-header { gap: 40px; }
+.job-header-main { flex: 1; min-width: 0; }
+.job-header .actions { flex-shrink: 0; align-self: flex-start; }
 
 /* Buttons */
 .btn {
   display: inline-flex; align-items: center; gap: 5px;
-  padding: 5px 14px; border-radius: 0; font-size: 13px; font-weight: 500;
+  padding: 5px 14px; border-radius: 6px; font-size: 13px; font-weight: 500;
   cursor: pointer; border: 1px solid transparent; text-decoration: none;
   line-height: 20px; white-space: nowrap; vertical-align: middle;
 }
@@ -96,7 +99,7 @@ a:hover { text-decoration: underline; }
 .btn-secondary:hover { background: #e9ecef; }
 
 /* Table */
-.table-wrap { background: white; border: 1px solid #d0d7de; border-radius: 0; overflow: hidden; }
+.table-wrap { background: white; border: 1px solid #d0d7de; border-radius: 8px; overflow: hidden; }
 table { width: 100%; border-collapse: collapse; }
 th {
   text-align: left; padding: 9px 14px; font-size: 12px; font-weight: 600;
@@ -140,7 +143,7 @@ tbody tr:hover td { background: #f6f8fa; }
 
 /* Badges */
 .badge {
-  display: inline-block; padding: 2px 9px; border-radius: 0;
+  display: inline-block; padding: 2px 9px; border-radius: 999px;
   font-size: 11px; font-weight: 600;
 }
 .badge-success { background: #dafbe1; color: #1a7f37; }
@@ -155,14 +158,14 @@ tbody tr:hover td { background: #f6f8fa; }
 
 /* Card */
 .card {
-  background: white; border: 1px solid #d0d7de; border-radius: 0;
+  background: white; border: 1px solid #d0d7de; border-radius: 8px;
   padding: 20px; margin-bottom: 16px;
 }
 
 /* Meta grid */
 .meta-grid {
   display: flex; flex-wrap: wrap; gap: 24px; margin-bottom: 20px;
-  background: white; border: 1px solid #d0d7de; border-radius: 0;
+  background: white; border: 1px solid #d0d7de; border-radius: 8px;
   padding: 16px 20px;
 }
 .meta-item {}
@@ -171,7 +174,7 @@ tbody tr:hover td { background: #f6f8fa; }
 
 /* Log */
 .log-panel {
-  background: #e9ecef; border: 1px solid #d0d7de; border-radius: 0; overflow: hidden;
+  background: #e9ecef; border: 1px solid #d0d7de; border-radius: 8px; overflow: hidden;
 }
 .log-panel-header {
   display: flex; align-items: center; justify-content: space-between; gap: 12px;
@@ -190,6 +193,7 @@ tbody tr:hover td { background: #f6f8fa; }
 .log-script-details {
   margin: 0; background: transparent; border: none; border-radius: 0;
 }
+.log-script-details + .log-wrap { border-top: 1px solid #d0d7de; }
 .log-script-summary {
   display: flex; align-items: center; width: 100%; cursor: pointer;
   font-size: 13px; font-weight: 600; color: #24292f; list-style: none;
@@ -211,13 +215,13 @@ tbody tr:hover td { background: #f6f8fa; }
   padding: 10px 12px 0; font-size: 12px; color: #57606a;
 }
 .log-script-wrap {
-  margin: 0; background: #f6f8fa; border: none; border-bottom: 1px solid #d0d7de; border-radius: 0;
+  margin: 0; background: #f6f8fa; border: none; border-bottom: none; border-radius: 0;
   padding: 12px; font-family: 'SFMono-Regular', 'Consolas', 'Liberation Mono', monospace;
   font-size: 12px; line-height: 1.7; color: #24292f; white-space: pre-wrap; overflow-x: auto;
 }
 
 /* Forms */
-.form-card { background: white; border: 1px solid #d0d7de; border-radius: 0; padding: 24px; }
+.form-card { background: white; border: 1px solid #d0d7de; border-radius: 8px; padding: 24px; }
 .form-section {
   padding-top: 20px; margin-top: 20px; border-top: 1px solid #d8dee4;
 }
@@ -234,7 +238,7 @@ tbody tr:hover td { background: #f6f8fa; }
 label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 5px; color: #24292f; }
 .hint { font-weight: normal; color: #57606a; font-size: 12px; margin-left: 4px; }
 input[type=text], input[type=password], input[type=number], textarea, select {
-  width: 100%; padding: 6px 12px; border: 1px solid #d0d7de; border-radius: 0;
+  width: 100%; padding: 6px 12px; border: 1px solid #d0d7de; border-radius: 6px;
   font-size: 14px; font-family: inherit; background: white; color: #24292f; line-height: 1.5;
 }
 input[type=text]:focus, input[type=password]:focus, input[type=number]:focus, textarea:focus, select:focus {
@@ -247,7 +251,7 @@ textarea.code {
 .form-actions { display: flex; gap: 8px; margin-top: 24px; padding-top: 18px; border-top: 1px solid #d0d7de; }
 
 /* Params editor */
-.params-editor { border: 1px solid #d0d7de; border-radius: 0; overflow: hidden; margin-top: 6px; }
+.params-editor { border: 1px solid #d0d7de; border-radius: 8px; overflow: hidden; margin-top: 6px; }
 .params-header {
   display: grid; grid-template-columns: 1fr 2fr 1fr 1.5fr 88px;
   gap: 8px; padding: 7px 10px; background: #f6f8fa;
@@ -264,7 +268,7 @@ textarea.code {
 .param-actions { display: flex; gap: 4px; justify-content: flex-end; }
 .btn-param {
   background: #f6f8fa; border: 1px solid #d0d7de; color: #24292f; cursor: pointer;
-  font-size: 12px; line-height: 1; padding: 5px 7px; border-radius: 0;
+  font-size: 12px; line-height: 1; padding: 5px 7px; border-radius: 6px;
 }
 .btn-param:hover { background: #e9ecef; }
 .btn-param:disabled { opacity: 0.5; cursor: default; }
@@ -272,7 +276,7 @@ textarea.code {
 .btn-rm:hover { opacity: 0.7; }
 
 /* Script sections editor */
-.script-sections-editor { border: 1px solid #d0d7de; border-radius: 0; overflow: hidden; margin-top: 6px; }
+.script-sections-editor { border: 1px solid #d0d7de; border-radius: 8px; overflow: hidden; margin-top: 6px; }
 .script-section {
   padding: 12px; border-bottom: 1px solid #f0f0f0; background: white;
 }
@@ -283,7 +287,7 @@ textarea.code {
 .script-section-name { flex: 1; margin: 0; }
 .script-section-execution {
   margin-bottom: 10px; padding: 10px; border: 1px solid #d0d7de;
-  border-radius: 0; background: #f6f8fa;
+  border-radius: 6px; background: #f6f8fa;
 }
 .script-section-exec-grid {
   display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
@@ -301,7 +305,7 @@ textarea.code {
 .script-sections-add, .steps-add { padding: 8px 10px; background: #f6f8fa; border-top: 1px solid #d0d7de; }
 
 /* Alert */
-.alert { padding: 12px 16px; border-radius: 0; margin-bottom: 16px; font-size: 13px; }
+.alert { padding: 12px 16px; border-radius: 8px; margin-bottom: 16px; font-size: 13px; }
 .alert-danger { background: #ffebe9; border: 1px solid #ffcecb; color: #a40e26; }
 .alert-warning { background: #fff8c5; border: 1px solid #e3b341; color: #7d4e00; }
 
@@ -316,7 +320,7 @@ textarea.code {
 /* Labels */
 .label-list { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
 .label-chip {
-  display: inline-block; padding: 1px 8px; border-radius: 0;
+  display: inline-block; padding: 1px 8px; border-radius: 999px;
   font-size: 11px; font-weight: 500; background: #ddf4ff; color: #0550ae;
   border: 1px solid #b6e3ff;
 }
@@ -325,7 +329,7 @@ textarea.code {
 }
 .dashboard-tab {
   appearance: none; border: 1px solid #d0d7de; background: #ffffff; color: #57606a;
-  border-radius: 0; padding: 6px 12px; font-size: 12px; font-weight: 600;
+  border-radius: 999px; padding: 6px 12px; font-size: 12px; font-weight: 600;
   cursor: pointer;
 }
 .dashboard-tab:hover {
@@ -353,7 +357,7 @@ textarea.code {
 .inline-form { display: inline; }
 
 /* Credentials binding editor */
-.cred-editor { border: 1px solid #d0d7de; border-radius: 0; overflow: hidden; margin-top: 6px; }
+.cred-editor { border: 1px solid #d0d7de; border-radius: 8px; overflow: hidden; margin-top: 6px; }
 .cred-header {
   display: grid; grid-template-columns: 2fr 1fr 1fr 60px;
   gap: 8px; padding: 7px 10px; background: #f6f8fa;
@@ -802,7 +806,7 @@ def _page(title, body, extra_js="", username=None, role=None):
 </head>
 <body>
   <header class="topbar">
-    <a href="/" class="brand">PIPELINE</a>
+    <span class="brand">PIPELINE</span>
     <nav class="topnav">{nav_html}</nav>
     <span class="topbar-spacer"></span>
     {new_job_html}
@@ -1150,13 +1154,6 @@ def job_detail(job, builds, username=None, role=None):
         if permissions["can_manage_jobs"]
         else ""
     )
-    delete_btn = (
-        f'<form class="inline-form" method="POST" action="/jobs/{esc(name)}/delete" onsubmit="return confirm(\'Delete job {esc(name)}?\')">'
-        '<button type="submit" class="btn btn-danger">Delete</button>'
-        "</form>"
-        if permissions["can_manage_jobs"]
-        else ""
-    )
 
     desc = esc(job.get("description", ""))
     desc_html = (
@@ -1175,8 +1172,8 @@ def job_detail(job, builds, username=None, role=None):
         else ""
     )
     header = f"""
-<div class="page-header">
-  <div>
+<div class="page-header job-header">
+  <div class="job-header-main">
     <h1>{esc(name)}{' <span class="badge badge-disabled">Disabled</span>' if not is_enabled else ''}</h1>
     {desc_html}{labels_html}
   </div>
@@ -1184,7 +1181,6 @@ def job_detail(job, builds, username=None, role=None):
     {build_btn}
     {workspace_btn}
     {edit_btn}
-    {delete_btn}
   </div>
 </div>
 """
@@ -1477,6 +1473,11 @@ def job_form(job=None, error=None, available_creds=None, username=None, role=Non
     trigger_gitpoll_hidden = " hidden" if trigger_type != "gitpoll" else ""
     submit_label = "Create Job" if is_new else "Save Changes"
     cancel_href = "/" if is_new else "/jobs/" + esc(job["name"])
+    delete_btn = (
+        f'<button type="submit" class="btn btn-danger" formmethod="POST" formaction="/jobs/{esc(job["name"])}/delete" formnovalidate onclick="return confirm(\'Delete job {esc(job["name"])}?\')">Delete Job</button>'
+        if not is_new
+        else ""
+    )
 
     if available_creds:
         git_credential_field = (
@@ -1627,6 +1628,7 @@ def job_form(job=None, error=None, available_creds=None, username=None, role=Non
 
             <div class="form-actions">
               <button type="submit" class="btn btn-primary">{submit_label}</button>
+              {delete_btn}
               <a href="{cancel_href}" class="btn btn-secondary">Cancel</a>
             </div>
           </form>
@@ -1848,6 +1850,7 @@ def build_form(job, error=None, values=None, username=None, role=None):
     error_html = f'<div class="alert alert-danger">{esc(error)}</div>' if error else ""
 
     fields = []
+    has_regex_params = False
     for p in params:
         raw_name = p.get("name", "")
         pname = esc(raw_name)
@@ -1857,16 +1860,19 @@ def build_form(job, error=None, values=None, username=None, role=None):
         pregex_esc = esc(pregex)
         label_hint = f' <span class="hint">{pdesc}</span>' if pdesc else ""
         regex_hint = f' <span class="hint">Regex: {pregex_esc}</span>' if pregex else ""
+        regex_attr = f' data-regex="{pregex_esc}"' if pregex else ""
+        if pregex:
+            has_regex_params = True
         pattern_attr = f' pattern="{pregex_esc}"' if pregex else ""
         title_attr = f' title="Must match: {pregex_esc}"' if pregex else ""
         fields.append(
             _html(
                 f"""
-                <div class="form-group">
-                  <label for="p_{pname}">{pname}{label_hint}{regex_hint}</label>
-                  <input type="text" id="p_{pname}" name="param_{pname}" value="{pdef}"{pattern_attr}{title_attr}>
-                </div>
-                """
+          <div class="form-group">
+            <label for="p_{pname}">{pname}{label_hint}{regex_hint}</label>
+            <input type="text" id="p_{pname}" name="param_{pname}" value="{pdef}"{regex_attr}{pattern_attr}{title_attr}>
+          </div>
+          """
             )
         )
 
@@ -1879,14 +1885,92 @@ def build_form(job, error=None, values=None, username=None, role=None):
           <form method="POST" action="/jobs/{esc(name)}/build">
             {''.join(fields)}
             <div class="form-actions">
-              <button type="submit" class="btn btn-primary">Run Build</button>
+              <button type="submit" class="btn btn-primary" id="run-build-btn">Run Build</button>
               <a href="/jobs/{esc(name)}" class="btn btn-secondary">Cancel</a>
             </div>
           </form>
         </div>
         """
     )
-    return _page(f"Build: {name}", body, username=username, role=role)
+
+    validate_js = ""
+    if has_regex_params:
+        validate_js = _html(
+            """
+            <script>
+            (function () {
+              var form = document.querySelector('form[action$="/build"]');
+              var submitBtn = document.getElementById("run-build-btn");
+              if (!form || !submitBtn) return;
+
+              var fields = [].slice.call(form.querySelectorAll("input[data-regex]"));
+              if (!fields.length) return;
+
+              function validateField(field, showMessage) {
+                var pattern = field.getAttribute("data-regex") || "";
+                if (!pattern) {
+                  field.setCustomValidity("");
+                  return true;
+                }
+                var ok = false;
+                try {
+                  ok = new RegExp("^(?:" + pattern + ")$").test(field.value || "");
+                } catch (e) {
+                  ok = false;
+                }
+                if (ok) {
+                  field.setCustomValidity("");
+                } else {
+                  field.setCustomValidity("Must match the configured regex.");
+                  if (showMessage) {
+                    field.reportValidity();
+                  }
+                }
+                return ok;
+              }
+
+              function updateSubmitState() {
+                var allValid = true;
+                fields.forEach(function (field) {
+                  if (!validateField(field, false)) {
+                    allValid = false;
+                  }
+                });
+                submitBtn.disabled = !allValid;
+                submitBtn.title = allValid ? "" : "Fix invalid parameters before running the build.";
+              }
+
+              fields.forEach(function (field) {
+                field.addEventListener("blur", function () {
+                  validateField(field, true);
+                  updateSubmitState();
+                });
+                field.addEventListener("input", function () {
+                  validateField(field, false);
+                  updateSubmitState();
+                });
+              });
+
+              form.addEventListener("submit", function (event) {
+                updateSubmitState();
+                if (submitBtn.disabled) {
+                  event.preventDefault();
+                }
+              });
+
+              updateSubmitState();
+            })();
+            </script>
+            """
+        )
+
+    return _page(
+        f"Build: {name}",
+        body,
+        extra_js=validate_js,
+        username=username,
+        role=role,
+    )
 
 
 def _live_log_js(section_log_urls, status_url):
@@ -1978,6 +2062,20 @@ def build_detail(job, build, section_logs, username=None, role=None):
             "</form>"
         )
 
+    rerun_btn = ""
+    if (
+        permissions["can_run_builds"]
+        and job.get("enabled", True)
+        and bool(job.get("parameters"))
+        and status not in ("running", "queued")
+    ):
+        rerun_btn = (
+            f'<form class="inline-form" method="POST"'
+            f' action="/jobs/{esc(name)}/builds/{esc(bid)}/rerun">'
+            '<button type="submit" class="btn btn-primary btn-sm">Re-run Build</button>'
+            "</form>"
+        )
+
     started = build.get("started_at", "")
     queued_at = build.get("queued_at", "")
     started_label = "Started"
@@ -2023,7 +2121,7 @@ def build_detail(job, build, section_logs, username=None, role=None):
     header = (
         f'<div class="page-header">'
         f"<h1>Build #{esc(bid)}: {esc(name)}</h1>"
-        f'<div class="actions">{cancel_btn}</div>'
+        f'<div class="actions">{rerun_btn}{cancel_btn}</div>'
         f"</div>"
     )
 

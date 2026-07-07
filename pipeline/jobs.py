@@ -158,6 +158,10 @@ def _normalize_mount_docker_socket(value):
     return bool(value)
 
 
+def _normalize_allow_rerun(value):
+    return True
+
+
 def _parse_cron_field(value, lo, hi):
     result = set()
     for part in value.split(","):
@@ -258,6 +262,7 @@ def normalize_job_config(config):
         normalized["notify_on_failure"] = True
     else:
         normalized["notify_on_failure"] = bool(raw_notify)
+    normalized["allow_rerun"] = _normalize_allow_rerun(config.get("allow_rerun"))
     trigger = config.get("trigger")
     if isinstance(trigger, dict):
         if trigger.get("type") == "cron":

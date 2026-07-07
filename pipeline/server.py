@@ -237,7 +237,7 @@ def make_handler(manager, auth):
                 elif len(parts) == 3 and parts[0] == "jobs" and parts[2] == "build":
                     if not self._require_roles("admin", "user"):
                         return
-                    self._get_build_form(parts[1])
+                    self._get_build_form(parts[1], query)
                 elif len(parts) == 4 and parts[0] == "jobs" and parts[2] == "builds":
                     self._get_build_detail(parts[1], parts[3])
                 elif (
@@ -382,6 +382,15 @@ def make_handler(manager, auth):
                     if not self._require_roles("admin", "user"):
                         return
                     self._post_build_cancel(parts[1], parts[3])
+                elif (
+                    len(parts) == 5
+                    and parts[0] == "jobs"
+                    and parts[2] == "builds"
+                    and parts[4] == "rerun"
+                ):
+                    if not self._require_roles("admin", "user"):
+                        return
+                    self._post_build_rerun(parts[1], parts[3])
                 elif parts == ["credentials", "new"]:
                     if not self._require_roles("admin"):
                         return
@@ -529,7 +538,7 @@ def make_handler(manager, auth):
                 )
             )
 
-        def _get_build_form(self, name):
+        def _get_build_form(self, name, query=None):
             if not _valid_job_name(name):
                 self._send_html(
                     ui.error_404(
@@ -559,9 +568,20 @@ def make_handler(manager, auth):
                 )
                 self._redirect(f"/jobs/{name}/builds/{build_id}")
                 return
+
+            values = None
+            rerun_from = ""
+            if query:
+                rerun_from = (query.get("rerun_from") or [""])[0].strip()
+            if rerun_from and _valid_build_id(rerun_from):
+                source_build = self._manager.get_build(name, int(rerun_from))
+                if source_build:
+                    values = source_build.get("parameters") or {}
+
             self._send_html(
                 ui.build_form(
                     job,
+                    values=values,
                     username=self._authed_user,
                     role=getattr(self, "_authed_role", None),
                 )
@@ -956,6 +976,23 @@ def make_handler(manager, auth):
                 return
             self._manager.cancel_build(name, int(bid))
             self._redirect(f"/jobs/{name}/builds/{bid}")
+
+        def _post_build_rerun(self, name, bid):
+            if not _valid_job_name(name) or not _valid_build_id(bid):
+                self._send_html(ui.error_404(username=self._authed_user), 404)
+                return
+            job = self._manager.get_job(name)
+            if not job:
+                self._send_html(ui.error_404(username=self._authed_user), 404)
+                return
+            if not job.get("enabled", True) or not job.get("parameters"):
+                self._redirect(f"/jobs/{name}/builds/{bid}")
+                return
+            source_build = self._manager.get_build(name, int(bid))
+            if not source_build:
+                self._send_html(ui.error_404(username=self._authed_user), 404)
+                return
+            self._redirect(f"/jobs/{name}/build?rerun_from={int(bid)}")
 
         # ── Credentials handlers ─────────────────────────────────────────────
 
