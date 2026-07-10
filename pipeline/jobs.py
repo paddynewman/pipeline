@@ -16,14 +16,10 @@ import tempfile
 import threading
 import time
 import email.message
-
 from .jsonio import write_json
+from .config import *  # noqa: F401,F403
+from .cron import cron_matches
 
-DEFAULT_SCRIPT_HEADER = "#!/bin/sh\nset -eux\n"
-DEFAULT_MAX_BUILDS = 10
-DEFAULT_MAX_CONCURRENT_JOBS = 2
-DEFAULT_QUEUE_PAUSE_MESSAGE = "Job queue is paused."
-DEFAULT_SMTP_PORT = 587
 WEATHER_WINDOW = 5
 
 
@@ -54,29 +50,6 @@ def _cred_decrypt(key, token):
         keystream.extend(h)
         block += 1
     return bytes(a ^ b for a, b in zip(ct, keystream)).decode("utf-8")
-
-
-def _atomic_write_json(path, data):
-    write_json(path, data)
-
-
-def _normalize_max_concurrent_jobs(value):
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError):
-        parsed = DEFAULT_MAX_CONCURRENT_JOBS
-    return max(1, parsed)
-
-
-def _normalize_queue_paused(value):
-    if value is None:
-        return False
-    return bool(value)
-
-
-def _normalize_queue_pause_message(value):
-    text = str(value or "").strip()
-    return text or DEFAULT_QUEUE_PAUSE_MESSAGE
 
 
 def compute_weather(builds):
@@ -110,231 +83,6 @@ def compute_weather(builds):
         "successes": successes,
         "total": len(recent),
     }
-
-
-def _normalize_script_header(value):
-    text = str(value or "")
-    text = text.replace("\r\n", "\n").replace("\r", "\n")
-    if not text.strip():
-        return DEFAULT_SCRIPT_HEADER
-    if not text.endswith("\n"):
-        text += "\n"
-    return text
-
-
-def _normalize_email_recipients(value):
-    if isinstance(value, list):
-        parts = value
-    else:
-        parts = re.split(r"[\n,]+", str(value or ""))
-    return [str(part).strip() for part in parts if str(part).strip()]
-
-
-def _normalize_email_settings(value):
-    raw = value if isinstance(value, dict) else {}
-    try:
-        port = int(raw.get("smtp_port", DEFAULT_SMTP_PORT))
-    except (TypeError, ValueError):
-        port = DEFAULT_SMTP_PORT
-    if port < 1 or port > 65535:
-        port = DEFAULT_SMTP_PORT
-    security = str(raw.get("smtp_security") or "starttls").strip().lower()
-    if security not in ("none", "starttls", "ssl"):
-        security = "starttls"
-    return {
-        "recipients": _normalize_email_recipients(raw.get("recipients")),
-        "from_address": str(raw.get("from_address") or "").strip(),
-        "smtp_host": str(raw.get("smtp_host") or "").strip(),
-        "smtp_port": port,
-        "smtp_security": security,
-        "smtp_username": str(raw.get("smtp_username") or "").strip(),
-        "smtp_credential": str(raw.get("smtp_credential") or "").strip(),
-    }
-
-
-def _normalize_mount_docker_socket(value):
-    if value is None:
-        return False
-    return bool(value)
-
-
-def _normalize_allow_rerun(value):
-    return True
-
-
-def _parse_cron_field(value, lo, hi):
-    result = set()
-    for part in value.split(","):
-        part = part.strip()
-        if "/" in part:
-            range_part, step_str = part.rsplit("/", 1)
-            try:
-                step = int(step_str)
-                if step < 1:
-                    raise ValueError("step must be >= 1")
-            except ValueError as exc:
-                raise ValueError(f'Invalid step in "{part}": {exc}')
-            if range_part == "*":
-                start, end = lo, hi
-            elif "-" in range_part:
-                a, b = range_part.split("-", 1)
-                start, end = int(a), int(b)
-            else:
-                start = end = int(range_part)
-            result.update(range(start, end + 1, step))
-        elif part == "*":
-            result.update(range(lo, hi + 1))
-        elif "-" in part:
-            a, b = part.split("-", 1)
-            result.update(range(int(a), int(b) + 1))
-        else:
-            result.add(int(part))
-    for v in result:
-        if v < lo or v > hi:
-            raise ValueError(f"Value {v} out of range [{lo}, {hi}]")
-    return result
-
-
-def validate_cron(schedule):
-    fields = schedule.strip().split()
-    if len(fields) != 5:
-        return "Schedule must have exactly 5 fields: minute hour day month weekday"
-    ranges = [(0, 59), (0, 23), (1, 31), (1, 12), (0, 6)]
-    names = ["minute", "hour", "day", "month", "weekday"]
-    for field, (lo, hi), name in zip(fields, ranges, names):
-        try:
-            _parse_cron_field(field, lo, hi)
-        except ValueError as exc:
-            return f'Invalid {name} field "{field}": {exc}'
-    return None
-
-
-def next_cron_run(schedule, now=None):
-    if validate_cron(schedule):
-        return None
-    current = now or datetime.datetime.now()
-    candidate = current.replace(second=0, microsecond=0) + datetime.timedelta(minutes=1)
-    limit = candidate + datetime.timedelta(days=366)
-    while candidate <= limit:
-        if cron_matches(schedule, candidate):
-            return candidate
-        candidate += datetime.timedelta(minutes=1)
-    return None
-
-
-def cron_matches(schedule, dt):
-    fields = schedule.strip().split()
-    if len(fields) != 5:
-        return False
-    ranges = [(0, 59), (0, 23), (1, 31), (1, 12), (0, 6)]
-    # cron weekday: 0=Sunday … 6=Saturday; Python weekday(): 0=Monday … 6=Sunday
-    weekday = (dt.weekday() + 1) % 7
-    values = [dt.minute, dt.hour, dt.day, dt.month, weekday]
-    for field, (lo, hi), value in zip(fields, ranges, values):
-        try:
-            if value not in _parse_cron_field(field, lo, hi):
-                return False
-        except ValueError:
-            return False
-    return True
-
-
-def normalize_job_config(config):
-    if not config:
-        return None
-    normalized = dict(config)
-    normalized["steps"] = _normalize_steps(config)
-    normalized["credentials"] = config.get("credentials") or []
-    raw_labels = config.get("labels")
-    if isinstance(raw_labels, list):
-        normalized["labels"] = [
-            str(l).strip().lower() for l in raw_labels if str(l).strip()
-        ]
-    else:
-        normalized["labels"] = []
-    raw_enabled = config.get("enabled")
-    if raw_enabled is None:
-        normalized["enabled"] = True
-    else:
-        normalized["enabled"] = bool(raw_enabled)
-    raw_notify = config.get("notify_on_failure")
-    if raw_notify is None:
-        normalized["notify_on_failure"] = True
-    else:
-        normalized["notify_on_failure"] = bool(raw_notify)
-    normalized["allow_rerun"] = _normalize_allow_rerun(config.get("allow_rerun"))
-    trigger = config.get("trigger")
-    if isinstance(trigger, dict):
-        if trigger.get("type") == "cron":
-            normalized["trigger"] = {
-                "type": "cron",
-                "schedule": str(trigger.get("schedule", "")).strip(),
-            }
-        elif trigger.get("type") == "gitpoll":
-            interval = trigger.get("interval")
-            if interval:
-                try:
-                    interval = int(interval)
-                except Exception:
-                    interval = None
-            if interval and interval < 300:
-                interval = 300
-            normalized["trigger"] = {"type": "gitpoll"}
-            if interval:
-                normalized["trigger"]["interval"] = interval
-        else:
-            normalized["trigger"] = {"type": "manual"}
-    else:
-        normalized["trigger"] = {"type": "manual"}
-    git = config.get("git")
-    if isinstance(git, dict) and str(git.get("url", "")).strip():
-        normalized["git"] = {
-            "url": str(git["url"]).strip(),
-            "branch": str(git.get("branch") or "main").strip() or "main",
-            "credential": str(git.get("credential") or "").strip(),
-            "shallow": bool(git.get("shallow", True)),
-        }
-    else:
-        normalized.pop("git", None)
-    raw = config.get("max_builds")
-    if raw is not None:
-        try:
-            normalized["max_builds"] = max(1, int(raw))
-        except (TypeError, ValueError):
-            normalized.pop("max_builds", None)
-    else:
-        normalized.pop("max_builds", None)
-    return normalized
-
-
-def _normalize_steps(config):
-    sections = config.get("steps")
-    result = []
-    if isinstance(sections, list):
-        for index, section in enumerate(sections):
-            if not isinstance(section, dict):
-                continue
-            name = str(section.get("name") or "").strip() or f"Script {index + 1}"
-            script = str(section.get("script") or "")
-            result.append(
-                {
-                    "name": name,
-                    "script": script,
-                    "image": _normalize_step_image(section),
-                    "reuse_container": bool(section.get("reuse_container", False)),
-                }
-            )
-    return result
-
-
-def _normalize_step_image(section):
-    image = str(section.get("image") or "").strip()
-    if image:
-        return image
-    raw = section.get("execution")
-    if isinstance(raw, dict):
-        return str(raw.get("image") or "").strip()
-    return ""
 
 
 class JobManager:
@@ -389,7 +137,7 @@ class JobManager:
             info = json.load(f)
         info["status"] = "running"
         info["started_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-        _atomic_write_json(info_path, info)
+        write_json(info_path, info)
 
         try:
             self._run_build(
@@ -844,7 +592,7 @@ class JobManager:
                 ],
             }
             info_path = os.path.join(build_dir, "info.json")
-            _atomic_write_json(info_path, info)
+            write_json(info_path, info)
 
             self._queued_builds.append(
                 {
@@ -950,6 +698,18 @@ class JobManager:
         cred_bindings = job.get("credentials") or []
         creds_ready = False
 
+        # Write every section's script file upfront so each step's details are
+        # available (and its header is clickable) before the step has run.
+        for index, section in enumerate(execution_sections):
+            script_content = self._prepare_script(
+                section.get("script", ""),
+                image=section.get("image"),
+            )
+            script_path = os.path.join(build_dir, "script-%d.sh" % (index + 1))
+            with open(script_path, "w") as f:
+                f.write(script_content)
+            os.chmod(script_path, stat.S_IRWXU)
+
         exit_code = -1
         last_index = 0
         active_container = None
@@ -981,14 +741,7 @@ class JobManager:
                             env[env_var] = cred["value"]
                     creds_ready = True
 
-                script_content = self._prepare_script(
-                    section.get("script", ""),
-                    image=section.get("image"),
-                )
                 script_path = os.path.join(build_dir, "script-%d.sh" % (index + 1))
-                with open(script_path, "w") as f:
-                    f.write(script_content)
-                os.chmod(script_path, stat.S_IRWXU)
 
                 section_log_path = os.path.join(
                     build_dir, "script-%d.log" % (index + 1)
@@ -1120,7 +873,7 @@ class JobManager:
         info["finished_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         info["duration"] = round(duration, 1)
         info["exit_code"] = exit_code
-        _atomic_write_json(info_path, info)
+        write_json(info_path, info)
 
         if status == "failure" and job.get("notify_on_failure", True):
             try:
@@ -1232,7 +985,7 @@ class JobManager:
         with open(info_path) as f:
             info = json.load(f)
         info["sections"][section_idx]["status"] = status
-        _atomic_write_json(info_path, info)
+        write_json(info_path, info)
 
     def cancel_build(self, job_name, build_id):
         key = (job_name, int(build_id))
@@ -1253,7 +1006,7 @@ class JobManager:
                 info["finished_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
                 info["duration"] = 0.0
                 info["exit_code"] = -15
-                _atomic_write_json(info_path, info)
+                write_json(info_path, info)
                 self._queue_cond.notify_all()
                 return True
         return False

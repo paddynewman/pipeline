@@ -4,10 +4,12 @@ import logging
 import re
 import sys
 import urllib.parse
+from collections import namedtuple
 
 from . import ui
 from .auth import AuthManager
-from .jobs import JobManager, compute_weather, next_cron_run, validate_cron
+from .jobs import JobManager, compute_weather
+from .cron import next_cron_run, validate_cron
 
 _access_log = logging.getLogger("pipeline.access")
 
@@ -26,7 +28,7 @@ def _valid_build_id(bid):
 
 
 def _valid_cred_name(name):
-    return bool(name and _JOB_NAME_RE.match(name))
+    return _valid_job_name(name)
 
 
 def _compile_param_regex(pattern):
@@ -43,6 +45,174 @@ def _validate_build_params(job, params):
             continue
         if not _compile_param_regex(pattern).fullmatch(params.get(name, "")):
             return f'Parameter "{name}" must match regex: {pattern}'
+    return None
+
+
+# ── Route table ──────────────────────────────────────────────────────────────
+#
+# Each Route maps an HTTP method + URL pattern to a handler method (referenced by
+# name). Pattern segments wrapped in ``{}`` capture a single path segment and are
+# passed to the handler as positional arguments in the order they appear; a
+# trailing ``{name*}`` segment captures the remaining path (joined with "/").
+#
+#   roles       tuple of roles allowed to access the route (None = any logged-in)
+#   wants_query if True, the parsed query dict is passed as the final argument
+#   check       name of a custom permission method called with the captured args
+#   public      if True, no authentication is required (login/setup pages)
+Route = namedtuple(
+    "Route",
+    "method pattern handler roles wants_query check public",
+    defaults=(None, False, None, False),
+)
+
+ROUTES = [
+    # Public (no authentication required)
+    Route("GET", "/login", "_get_login", public=True),
+    Route("POST", "/login", "_post_login", public=True),
+    Route("GET", "/setup", "_get_setup", public=True),
+    Route("POST", "/setup", "_post_setup", public=True),
+    # GET
+    Route("GET", "/", "_get_dashboard"),
+    Route("GET", "/logout", "_get_logout"),
+    Route(
+        "GET", "/cron/preview", "_get_cron_preview", roles=("admin",), wants_query=True
+    ),
+    Route("GET", "/jobs/new", "_get_job_new", roles=("admin",)),
+    Route("GET", "/jobs/{name}", "_get_job_detail"),
+    Route("GET", "/jobs/{name}/edit", "_get_job_edit", roles=("admin",)),
+    Route(
+        "GET",
+        "/jobs/{name}/build",
+        "_get_build_form",
+        roles=("admin", "user"),
+        wants_query=True,
+    ),
+    Route("GET", "/jobs/{name}/builds/{bid}", "_get_build_detail"),
+    Route("GET", "/jobs/{name}/builds/{bid}/log", "_get_build_log"),
+    Route(
+        "GET",
+        "/jobs/{name}/builds/{bid}/log/{section}",
+        "_get_build_section_log_text",
+    ),
+    Route("GET", "/jobs/{name}/builds/{bid}/status", "_get_build_status"),
+    Route(
+        "GET",
+        "/jobs/{name}/workspace",
+        "_get_workspace",
+        roles=("admin", "user", "viewer"),
+    ),
+    Route(
+        "GET",
+        "/jobs/{name}/workspace/{path*}",
+        "_get_workspace_file",
+        roles=("admin", "user", "viewer"),
+    ),
+    Route("GET", "/credentials", "_get_credentials_list", roles=("admin",)),
+    Route("GET", "/credentials/new", "_get_credential_new", roles=("admin",)),
+    Route("GET", "/credentials/{name}/edit", "_get_credential_edit", roles=("admin",)),
+    Route("GET", "/settings", "_get_settings", roles=("admin",)),
+    Route("GET", "/settings/users", "_get_users_list", roles=("admin",)),
+    Route("GET", "/settings/users/new", "_get_user_new", roles=("admin",)),
+    Route("GET", "/settings/users/{name}/edit", "_get_user_edit", roles=("admin",)),
+    Route(
+        "GET",
+        "/settings/users/{name}/password",
+        "_get_user_password",
+        check="_can_manage_password",
+    ),
+    # POST
+    Route("POST", "/jobs/new", "_post_job_create", roles=("admin",)),
+    Route("POST", "/jobs/{name}/edit", "_post_job_update", roles=("admin",)),
+    Route("POST", "/jobs/{name}/delete", "_post_job_delete", roles=("admin",)),
+    Route("POST", "/jobs/{name}/build", "_post_job_trigger", roles=("admin", "user")),
+    Route(
+        "POST",
+        "/jobs/{name}/workspace/clear",
+        "_post_workspace_clear",
+        roles=("admin",),
+    ),
+    Route(
+        "POST",
+        "/jobs/{name}/builds/{bid}/cancel",
+        "_post_build_cancel",
+        roles=("admin", "user"),
+    ),
+    Route(
+        "POST",
+        "/jobs/{name}/builds/{bid}/rerun",
+        "_post_build_rerun",
+        roles=("admin", "user"),
+    ),
+    Route("POST", "/credentials/new", "_post_credential_create", roles=("admin",)),
+    Route(
+        "POST",
+        "/credentials/{name}/edit",
+        "_post_credential_update",
+        roles=("admin",),
+    ),
+    Route(
+        "POST",
+        "/credentials/{name}/delete",
+        "_post_credential_delete",
+        roles=("admin",),
+    ),
+    Route("POST", "/settings", "_post_settings", roles=("admin",)),
+    Route("POST", "/settings/users/new", "_post_user_create", roles=("admin",)),
+    Route("POST", "/settings/users/{name}/edit", "_post_user_edit", roles=("admin",)),
+    Route(
+        "POST",
+        "/settings/users/{name}/password",
+        "_post_user_password",
+        check="_can_manage_password",
+    ),
+    Route(
+        "POST",
+        "/settings/users/{name}/delete",
+        "_post_user_delete",
+        roles=("admin",),
+    ),
+    Route("POST", "/settings/users/{name}/role", "_post_user_role", roles=("admin",)),
+]
+
+
+def _split_pattern(pattern):
+    return [seg for seg in pattern.split("/") if seg]
+
+
+def _match_pattern(segments, parts):
+    """Match precompiled pattern segments against request path parts.
+
+    Returns a list of captured values, or None if the pattern does not match.
+    """
+    params = []
+    for i, seg in enumerate(segments):
+        if seg.startswith("{") and seg.endswith("*}"):
+            rest = parts[i:]
+            if not rest:
+                return None
+            params.append("/".join(rest))
+            return params
+        if i >= len(parts):
+            return None
+        if seg.startswith("{"):
+            params.append(parts[i])
+        elif parts[i] != seg:
+            return None
+    if len(parts) != len(segments):
+        return None
+    return params
+
+
+_COMPILED_ROUTES = [(route, _split_pattern(route.pattern)) for route in ROUTES]
+
+
+def _resolve_route(method, parts):
+    for route, segments in _COMPILED_ROUTES:
+        if route.method != method:
+            continue
+        params = _match_pattern(segments, parts)
+        if params is not None:
+            return route, params
     return None
 
 
@@ -180,13 +350,7 @@ def make_handler(manager, auth):
             return getattr(self, "_authed_role", None) in roles
 
         def _forbidden(self):
-            self._send_html(
-                ui.error_403(
-                    username=getattr(self, "_authed_user", None),
-                    role=getattr(self, "_authed_role", None),
-                ),
-                403,
-            )
+            self._render(ui.error_403, status=403)
 
         def _require_roles(self, *roles):
             if self._has_role(*roles):
@@ -203,360 +367,95 @@ def make_handler(manager, auth):
                 return True
             return False
 
+        def _render(self, page_fn, *args, status=200, **kwargs):
+            """Render a UI page, passing a context with the current user/role."""
+            ctx = ui.PageContext(
+                username=getattr(self, "_authed_user", None),
+                role=getattr(self, "_authed_role", None),
+            )
+            self._send_html(page_fn(ctx, *args, **kwargs), status)
+
+        def _send_404(self):
+            self._render(ui.error_404, status=404)
+
+        def _load_job_or_404(self, name):
+            """Return the named job, or send a 404 page and return None."""
+            if not _valid_job_name(name):
+                self._send_404()
+                return None
+            job = self._manager.get_job(name)
+            if not job:
+                self._send_404()
+                return None
+            return job
+
         # ── Routing ──────────────────────────────────────────────────────────
 
         def do_GET(self):
-            _, parts, query = self._parse_path()
-            try:
-                if parts == ["login"]:
-                    self._get_login()
-                    return
-                if parts == ["setup"]:
-                    self._get_setup()
-                    return
-                if not self._require_auth():
-                    return
-                if not parts:
-                    self._get_dashboard()
-                elif parts == ["cron", "preview"]:
-                    if not self._require_roles("admin"):
-                        return
-                    self._get_cron_preview(query)
-                elif parts == ["logout"]:
-                    self._get_logout()
-                elif parts == ["jobs", "new"]:
-                    if not self._require_roles("admin"):
-                        return
-                    self._get_job_new()
-                elif len(parts) == 2 and parts[0] == "jobs":
-                    self._get_job_detail(parts[1])
-                elif len(parts) == 3 and parts[0] == "jobs" and parts[2] == "edit":
-                    if not self._require_roles("admin"):
-                        return
-                    self._get_job_edit(parts[1])
-                elif len(parts) == 3 and parts[0] == "jobs" and parts[2] == "build":
-                    if not self._require_roles("admin", "user"):
-                        return
-                    self._get_build_form(parts[1], query)
-                elif len(parts) == 4 and parts[0] == "jobs" and parts[2] == "builds":
-                    self._get_build_detail(parts[1], parts[3])
-                elif (
-                    len(parts) == 5
-                    and parts[0] == "jobs"
-                    and parts[2] == "builds"
-                    and parts[4] == "log"
-                ):
-                    self._get_build_log(parts[1], parts[3])
-                elif (
-                    len(parts) == 6
-                    and parts[0] == "jobs"
-                    and parts[2] == "builds"
-                    and parts[4] == "log"
-                ):
-                    self._get_build_section_log_text(parts[1], parts[3], parts[5])
-                elif (
-                    len(parts) == 5
-                    and parts[0] == "jobs"
-                    and parts[2] == "builds"
-                    and parts[4] == "status"
-                ):
-                    self._get_build_status(parts[1], parts[3])
-                elif len(parts) == 3 and parts[0] == "jobs" and parts[2] == "workspace":
-                    if not self._require_roles("admin", "user", "viewer"):
-                        return
-                    self._get_workspace(parts[1])
-                elif len(parts) >= 4 and parts[0] == "jobs" and parts[2] == "workspace":
-                    if not self._require_roles("admin", "user", "viewer"):
-                        return
-                    self._get_workspace_file(parts[1], "/".join(parts[3:]))
-                elif parts == ["credentials"]:
-                    if not self._require_roles("admin"):
-                        return
-                    self._get_credentials_list()
-                elif parts == ["credentials", "new"]:
-                    if not self._require_roles("admin"):
-                        return
-                    self._get_credential_new()
-                elif (
-                    len(parts) == 3 and parts[0] == "credentials" and parts[2] == "edit"
-                ):
-                    if not self._require_roles("admin"):
-                        return
-                    self._get_credential_edit(parts[1])
-                elif parts == ["settings"]:
-                    if not self._require_roles("admin"):
-                        return
-                    self._get_settings()
-                elif parts == ["settings", "users"]:
-                    if not self._require_roles("admin"):
-                        return
-                    self._get_users_list()
-                elif parts == ["settings", "users", "new"]:
-                    if not self._require_roles("admin"):
-                        return
-                    self._get_user_new()
-                elif (
-                    len(parts) == 3
-                    and parts[0] == "settings"
-                    and parts[1] == "users"
-                    and parts[2] != "new"
-                ):
-                    self._send_html(
-                        ui.error_404(username=getattr(self, "_authed_user", None)), 404
-                    )
-                elif (
-                    len(parts) == 4
-                    and parts[0] == "settings"
-                    and parts[1] == "users"
-                    and parts[3] == "edit"
-                ):
-                    if not self._require_roles("admin"):
-                        return
-                    self._get_user_edit(parts[2])
-                elif (
-                    len(parts) == 4
-                    and parts[0] == "settings"
-                    and parts[1] == "users"
-                    and parts[3] == "password"
-                ):
-                    if not self._can_manage_password(parts[2]):
-                        self._forbidden()
-                        return
-                    self._get_user_password(parts[2])
-                else:
-                    self._send_html(
-                        ui.error_404(username=getattr(self, "_authed_user", None)), 404
-                    )
-            except Exception as exc:
-                self._send_html(
-                    ui.error_500(
-                        exc,
-                        username=getattr(self, "_authed_user", None),
-                        role=getattr(self, "_authed_role", None),
-                    ),
-                    500,
-                )
+            self._dispatch("GET")
 
         def do_POST(self):
-            _, parts, _ = self._parse_path()
+            self._dispatch("POST")
+
+        def _dispatch(self, method):
+            _, parts, query = self._parse_path()
             try:
-                if parts == ["login"]:
-                    self._post_login()
+                match = _resolve_route(method, parts)
+                # Public routes (login/setup) bypass authentication.
+                if match is not None and match[0].public:
+                    route, params = match
+                    getattr(self, route.handler)(*params)
                     return
-                if parts == ["setup"]:
-                    self._post_setup()
-                    return
+                # Everything else requires a logged-in user first, so unknown
+                # paths still redirect anonymous visitors to the login page.
                 if not self._require_auth():
                     return
-                if parts == ["jobs", "new"]:
-                    if not self._require_roles("admin"):
-                        return
-                    self._post_job_create()
-                elif len(parts) == 3 and parts[0] == "jobs" and parts[2] == "edit":
-                    if not self._require_roles("admin"):
-                        return
-                    self._post_job_update(parts[1])
-                elif len(parts) == 3 and parts[0] == "jobs" and parts[2] == "delete":
-                    if not self._require_roles("admin"):
-                        return
-                    self._post_job_delete(parts[1])
-                elif len(parts) == 3 and parts[0] == "jobs" and parts[2] == "build":
-                    if not self._require_roles("admin", "user"):
-                        return
-                    self._post_job_trigger(parts[1])
-                elif (
-                    len(parts) == 4
-                    and parts[0] == "jobs"
-                    and parts[2] == "workspace"
-                    and parts[3] == "clear"
-                ):
-                    if not self._require_roles("admin"):
-                        return
-                    self._post_workspace_clear(parts[1])
-                elif (
-                    len(parts) == 5
-                    and parts[0] == "jobs"
-                    and parts[2] == "builds"
-                    and parts[4] == "cancel"
-                ):
-                    if not self._require_roles("admin", "user"):
-                        return
-                    self._post_build_cancel(parts[1], parts[3])
-                elif (
-                    len(parts) == 5
-                    and parts[0] == "jobs"
-                    and parts[2] == "builds"
-                    and parts[4] == "rerun"
-                ):
-                    if not self._require_roles("admin", "user"):
-                        return
-                    self._post_build_rerun(parts[1], parts[3])
-                elif parts == ["credentials", "new"]:
-                    if not self._require_roles("admin"):
-                        return
-                    self._post_credential_create()
-                elif (
-                    len(parts) == 3 and parts[0] == "credentials" and parts[2] == "edit"
-                ):
-                    if not self._require_roles("admin"):
-                        return
-                    self._post_credential_update(parts[1])
-                elif (
-                    len(parts) == 3
-                    and parts[0] == "credentials"
-                    and parts[2] == "delete"
-                ):
-                    if not self._require_roles("admin"):
-                        return
-                    self._post_credential_delete(parts[1])
-                elif parts == ["settings"]:
-                    if not self._require_roles("admin"):
-                        return
-                    self._post_settings()
-                elif parts == ["settings", "users", "new"]:
-                    if not self._require_roles("admin"):
-                        return
-                    self._post_user_create()
-                elif (
-                    len(parts) == 4
-                    and parts[0] == "settings"
-                    and parts[1] == "users"
-                    and parts[3] == "edit"
-                ):
-                    if not self._require_roles("admin"):
-                        return
-                    self._post_user_edit(parts[2])
-                elif (
-                    len(parts) == 4
-                    and parts[0] == "settings"
-                    and parts[1] == "users"
-                    and parts[3] == "password"
-                ):
-                    if not self._can_manage_password(parts[2]):
+                if match is None:
+                    self._send_404()
+                    return
+                route, params = match
+                if route.check is not None:
+                    if not getattr(self, route.check)(*params):
                         self._forbidden()
                         return
-                    self._post_user_password(parts[2])
-                elif (
-                    len(parts) == 4
-                    and parts[0] == "settings"
-                    and parts[1] == "users"
-                    and parts[3] == "delete"
-                ):
-                    if not self._require_roles("admin"):
+                elif route.roles is not None:
+                    if not self._require_roles(*route.roles):
                         return
-                    self._post_user_delete(parts[2])
-                elif (
-                    len(parts) == 4
-                    and parts[0] == "settings"
-                    and parts[1] == "users"
-                    and parts[3] == "role"
-                ):
-                    if not self._require_roles("admin"):
-                        return
-                    self._post_user_role(parts[2])
-                else:
-                    self._send_html(
-                        ui.error_404(username=getattr(self, "_authed_user", None)), 404
-                    )
+                args = list(params)
+                if route.wants_query:
+                    args.append(query)
+                getattr(self, route.handler)(*args)
             except Exception as exc:
-                self._send_html(
-                    ui.error_500(
-                        exc,
-                        username=getattr(self, "_authed_user", None),
-                        role=getattr(self, "_authed_role", None),
-                    ),
-                    500,
-                )
+                self._render(ui.error_500, exc, status=500)
 
         # ── GET handlers ─────────────────────────────────────────────────────
 
         def _get_dashboard(self):
             jobs = self._manager.list_jobs()
-            user = self._current_user()
-            self._send_html(
-                ui.dashboard(
-                    jobs,
-                    username=user,
-                    role=getattr(self, "_authed_role", None),
-                )
-            )
+            self._render(ui.dashboard, jobs)
 
         def _get_job_new(self):
             creds = self._manager.list_credentials()
-            self._send_html(
-                ui.job_form(
-                    available_creds=[c["name"] for c in creds],
-                    username=self._authed_user,
-                )
-            )
+            self._render(ui.job_form, available_creds=[c["name"] for c in creds])
 
         def _get_job_detail(self, name):
-            if not _valid_job_name(name):
-                self._send_html(
-                    ui.error_404(
-                        username=self._authed_user,
-                        role=getattr(self, "_authed_role", None),
-                    ),
-                    404,
-                )
-                return
-            job = self._manager.get_job(name)
-            if not job:
-                self._send_html(
-                    ui.error_404(
-                        username=self._authed_user,
-                        role=getattr(self, "_authed_role", None),
-                    ),
-                    404,
-                )
+            job = self._load_job_or_404(name)
+            if job is None:
                 return
             builds = self._manager.list_builds(name)
             job["weather"] = compute_weather(builds)
-            self._send_html(
-                ui.job_detail(
-                    job,
-                    builds,
-                    username=self._authed_user,
-                    role=getattr(self, "_authed_role", None),
-                )
-            )
+            self._render(ui.job_detail, job, builds)
 
         def _get_job_edit(self, name):
-            if not _valid_job_name(name):
-                self._send_html(ui.error_404(username=self._authed_user), 404)
-                return
-            job = self._manager.get_job(name)
-            if not job:
-                self._send_html(ui.error_404(username=self._authed_user), 404)
+            job = self._load_job_or_404(name)
+            if job is None:
                 return
             creds = self._manager.list_credentials()
-            self._send_html(
-                ui.job_form(
-                    job,
-                    available_creds=[c["name"] for c in creds],
-                    username=self._authed_user,
-                )
-            )
+            self._render(ui.job_form, job, available_creds=[c["name"] for c in creds])
 
         def _get_build_form(self, name, query=None):
-            if not _valid_job_name(name):
-                self._send_html(
-                    ui.error_404(
-                        username=self._authed_user,
-                        role=getattr(self, "_authed_role", None),
-                    ),
-                    404,
-                )
-                return
-            job = self._manager.get_job(name)
-            if not job:
-                self._send_html(
-                    ui.error_404(
-                        username=self._authed_user,
-                        role=getattr(self, "_authed_role", None),
-                    ),
-                    404,
-                )
+            job = self._load_job_or_404(name)
+            if job is None:
                 return
             if not job.get("enabled", True):
                 self._redirect(f"/jobs/{name}")
@@ -578,46 +477,21 @@ def make_handler(manager, auth):
                 if source_build:
                     values = source_build.get("parameters") or {}
 
-            self._send_html(
-                ui.build_form(
-                    job,
-                    values=values,
-                    username=self._authed_user,
-                    role=getattr(self, "_authed_role", None),
-                )
-            )
+            self._render(ui.build_form, job, values=values)
 
         def _get_build_detail(self, name, bid):
-            if not _valid_job_name(name) or not _valid_build_id(bid):
-                self._send_html(
-                    ui.error_404(
-                        username=self._authed_user,
-                        role=getattr(self, "_authed_role", None),
-                    ),
-                    404,
-                )
+            if not _valid_build_id(bid):
+                self._send_404()
                 return
-            job = self._manager.get_job(name)
+            job = self._load_job_or_404(name)
+            if job is None:
+                return
             build = self._manager.get_build(name, int(bid))
-            if not job or not build:
-                self._send_html(
-                    ui.error_404(
-                        username=self._authed_user,
-                        role=getattr(self, "_authed_role", None),
-                    ),
-                    404,
-                )
+            if not build:
+                self._send_404()
                 return
             section_logs = self._manager.get_build_section_logs(name, int(bid))
-            self._send_html(
-                ui.build_detail(
-                    job,
-                    build,
-                    section_logs,
-                    username=self._authed_user,
-                    role=getattr(self, "_authed_role", None),
-                )
-            )
+            self._render(ui.build_detail, job, build, section_logs)
 
         def _get_build_log(self, name, bid):
             if not _valid_job_name(name) or not _valid_build_id(bid):
@@ -688,48 +562,25 @@ def make_handler(manager, auth):
             )
 
         def _get_workspace(self, name):
-            if not _valid_job_name(name):
-                self._send_html(
-                    ui.error_404(
-                        username=self._authed_user,
-                        role=getattr(self, "_authed_role", None),
-                    ),
-                    404,
-                )
-                return
-            job = self._manager.get_job(name)
-            if not job:
-                self._send_html(
-                    ui.error_404(
-                        username=self._authed_user,
-                        role=getattr(self, "_authed_role", None),
-                    ),
-                    404,
-                )
+            job = self._load_job_or_404(name)
+            if job is None:
                 return
             files = self._manager.list_workspace_files(name)
-            self._send_html(
-                ui.workspace(
-                    job,
-                    files,
-                    username=self._authed_user,
-                    role=getattr(self, "_authed_role", None),
-                )
-            )
+            self._render(ui.workspace, job, files)
 
         def _get_workspace_file(self, name, rel_path):
             if not _valid_job_name(name):
-                self._send_html(ui.error_404(), 404)
+                self._send_404()
                 return
             full_path = self._manager.get_workspace_file(name, rel_path)
             if not full_path:
-                self._send_html(ui.error_404(), 404)
+                self._send_404()
                 return
             try:
                 with open(full_path, "rb") as f:
                     data = f.read()
             except OSError:
-                self._send_html(ui.error_404(), 404)
+                self._send_404()
                 return
             mime = _guess_mime(rel_path)
             self.send_response(200)
@@ -746,29 +597,47 @@ def make_handler(manager, auth):
             notify_on_failure = form.get("notify_on_failure") == "1"
             available_creds = [c["name"] for c in self._manager.list_credentials()]
             if not _valid_job_name(name):
-                self._send_html(
-                    ui.job_form(
-                        error="Invalid job name. Use letters, numbers, hyphens and underscores only.",
-                        available_creds=available_creds,
-                        username=self._authed_user,
-                    )
+                self._render(
+                    ui.job_form,
+                    error="Invalid job name. Use letters, numbers, hyphens and underscores only.",
+                    available_creds=available_creds,
                 )
                 return
             if self._manager.get_job(name):
-                self._send_html(
-                    ui.job_form(
-                        error=f'A job named "{name}" already exists.',
-                        available_creds=available_creds,
-                        username=self._authed_user,
-                    )
+                self._render(
+                    ui.job_form,
+                    error=f'A job named "{name}" already exists.',
+                    available_creds=available_creds,
                 )
                 return
             try:
                 params = _parse_params_json(form.get("params_json", "[]"))
                 steps = _parse_steps_json(form.get("steps_json", "[]"))
             except ValueError as exc:
-                self._send_html(
-                    ui.job_form(
+                self._render(
+                    ui.job_form,
+                    {
+                        "name": name,
+                        "description": form.get("description", "").strip(),
+                        "steps": _load_raw_steps_json(form.get("steps_json", "[]")),
+                        "parameters": _load_raw_params_json(
+                            form.get("params_json", "[]")
+                        ),
+                        "credentials": _parse_credentials_json(
+                            form.get("credentials_json", "[]")
+                        ),
+                        "notify_on_failure": notify_on_failure,
+                    },
+                    error=str(exc),
+                    available_creds=available_creds,
+                )
+                return
+            trigger = _parse_trigger(form)
+            if trigger["type"] == "cron":
+                cron_error = validate_cron(trigger["schedule"])
+                if cron_error:
+                    self._render(
+                        ui.job_form,
                         {
                             "name": name,
                             "description": form.get("description", "").strip(),
@@ -780,38 +649,10 @@ def make_handler(manager, auth):
                                 form.get("credentials_json", "[]")
                             ),
                             "notify_on_failure": notify_on_failure,
+                            "trigger": trigger,
                         },
-                        error=str(exc),
+                        error=f"Invalid cron schedule: {cron_error}",
                         available_creds=available_creds,
-                        username=self._authed_user,
-                    )
-                )
-                return
-            trigger = _parse_trigger(form)
-            if trigger["type"] == "cron":
-                cron_error = validate_cron(trigger["schedule"])
-                if cron_error:
-                    self._send_html(
-                        ui.job_form(
-                            {
-                                "name": name,
-                                "description": form.get("description", "").strip(),
-                                "steps": _load_raw_steps_json(
-                                    form.get("steps_json", "[]")
-                                ),
-                                "parameters": _load_raw_params_json(
-                                    form.get("params_json", "[]")
-                                ),
-                                "credentials": _parse_credentials_json(
-                                    form.get("credentials_json", "[]")
-                                ),
-                                "notify_on_failure": notify_on_failure,
-                                "trigger": trigger,
-                            },
-                            error=f"Invalid cron schedule: {cron_error}",
-                            available_creds=available_creds,
-                            username=self._authed_user,
-                        )
                     )
                     return
             config = {
@@ -832,12 +673,8 @@ def make_handler(manager, auth):
             self._redirect(f"/jobs/{name}")
 
         def _post_job_update(self, name):
-            if not _valid_job_name(name):
-                self._send_html(ui.error_404(username=self._authed_user), 404)
-                return
-            job = self._manager.get_job(name)
-            if not job:
-                self._send_html(ui.error_404(username=self._authed_user), 404)
+            job = self._load_job_or_404(name)
+            if job is None:
                 return
             form = self._read_form()
             notify_on_failure = form.get("notify_on_failure") == "1"
@@ -856,13 +693,11 @@ def make_handler(manager, auth):
                     ),
                     "notify_on_failure": notify_on_failure,
                 }
-                self._send_html(
-                    ui.job_form(
-                        updated_job,
-                        error=str(exc),
-                        available_creds=available_creds,
-                        username=self._authed_user,
-                    )
+                self._render(
+                    ui.job_form,
+                    updated_job,
+                    error=str(exc),
+                    available_creds=available_creds,
                 )
                 return
             trigger = _parse_trigger(form)
@@ -882,13 +717,11 @@ def make_handler(manager, auth):
                         "notify_on_failure": notify_on_failure,
                         "trigger": trigger,
                     }
-                    self._send_html(
-                        ui.job_form(
-                            updated_job,
-                            error=f"Invalid cron schedule: {cron_error}",
-                            available_creds=available_creds,
-                            username=self._authed_user,
-                        )
+                    self._render(
+                        ui.job_form,
+                        updated_job,
+                        error=f"Invalid cron schedule: {cron_error}",
+                        available_creds=available_creds,
                     )
                     return
             job["description"] = form.get("description", "").strip()
@@ -914,24 +747,8 @@ def make_handler(manager, auth):
             self._redirect("/")
 
         def _post_job_trigger(self, name):
-            if not _valid_job_name(name):
-                self._send_html(
-                    ui.error_404(
-                        username=self._authed_user,
-                        role=getattr(self, "_authed_role", None),
-                    ),
-                    404,
-                )
-                return
-            job = self._manager.get_job(name)
-            if not job:
-                self._send_html(
-                    ui.error_404(
-                        username=self._authed_user,
-                        role=getattr(self, "_authed_role", None),
-                    ),
-                    404,
-                )
+            job = self._load_job_or_404(name)
+            if job is None:
                 return
             form = self._read_form()
             if not job.get("enabled", True):
@@ -944,15 +761,7 @@ def make_handler(manager, auth):
                     params[pname] = form.get(f"param_{pname}", p.get("default", ""))
             error = _validate_build_params(job, params)
             if error:
-                self._send_html(
-                    ui.build_form(
-                        job,
-                        error=error,
-                        values=params,
-                        username=self._authed_user,
-                        role=getattr(self, "_authed_role", None),
-                    )
-                )
+                self._render(ui.build_form, job, error=error, values=params)
                 return
             build_id = self._manager.trigger_build(
                 name, params, triggered_by=self._authed_user
@@ -960,37 +769,32 @@ def make_handler(manager, auth):
             self._redirect(f"/jobs/{name}/builds/{build_id}")
 
         def _post_workspace_clear(self, name):
-            if not _valid_job_name(name):
-                self._send_html(ui.error_404(username=self._authed_user), 404)
-                return
-            job = self._manager.get_job(name)
-            if not job:
-                self._send_html(ui.error_404(username=self._authed_user), 404)
+            job = self._load_job_or_404(name)
+            if job is None:
                 return
             self._manager.clear_workspace(name)
             self._redirect(f"/jobs/{name}/workspace")
 
         def _post_build_cancel(self, name, bid):
             if not _valid_job_name(name) or not _valid_build_id(bid):
-                self._send_html(ui.error_404(username=self._authed_user), 404)
+                self._send_404()
                 return
             self._manager.cancel_build(name, int(bid))
             self._redirect(f"/jobs/{name}/builds/{bid}")
 
         def _post_build_rerun(self, name, bid):
-            if not _valid_job_name(name) or not _valid_build_id(bid):
-                self._send_html(ui.error_404(username=self._authed_user), 404)
+            if not _valid_build_id(bid):
+                self._send_404()
                 return
-            job = self._manager.get_job(name)
-            if not job:
-                self._send_html(ui.error_404(username=self._authed_user), 404)
+            job = self._load_job_or_404(name)
+            if job is None:
                 return
             if not job.get("enabled", True) or not job.get("parameters"):
                 self._redirect(f"/jobs/{name}/builds/{bid}")
                 return
             source_build = self._manager.get_build(name, int(bid))
             if not source_build:
-                self._send_html(ui.error_404(username=self._authed_user), 404)
+                self._send_404()
                 return
             self._redirect(f"/jobs/{name}/build?rerun_from={int(bid)}")
 
@@ -998,38 +802,34 @@ def make_handler(manager, auth):
 
         def _get_credentials_list(self):
             creds = self._manager.list_credentials()
-            self._send_html(ui.credentials_list(creds, username=self._authed_user))
+            self._render(ui.credentials_list, creds)
 
         def _get_credential_new(self):
-            self._send_html(ui.credentials_form(username=self._authed_user))
+            self._render(ui.credentials_form)
 
         def _get_credential_edit(self, name):
             if not _valid_cred_name(name):
-                self._send_html(ui.error_404(username=self._authed_user), 404)
+                self._send_404()
                 return
             cred = self._manager.get_credential(name)
             if not cred:
-                self._send_html(ui.error_404(username=self._authed_user), 404)
+                self._send_404()
                 return
-            self._send_html(ui.credentials_form(cred, username=self._authed_user))
+            self._render(ui.credentials_form, cred)
 
         def _post_credential_create(self):
             form = self._read_form()
             name = form.get("name", "").strip()
             if not _valid_cred_name(name):
-                self._send_html(
-                    ui.credentials_form(
-                        error="Invalid name. Use letters, numbers, hyphens and underscores only.",
-                        username=self._authed_user,
-                    )
+                self._render(
+                    ui.credentials_form,
+                    error="Invalid name. Use letters, numbers, hyphens and underscores only.",
                 )
                 return
             if self._manager.get_credential(name):
-                self._send_html(
-                    ui.credentials_form(
-                        error=f'A credential named "{name}" already exists.',
-                        username=self._authed_user,
-                    )
+                self._render(
+                    ui.credentials_form,
+                    error=f'A credential named "{name}" already exists.',
                 )
                 return
             self._manager.save_credential(
@@ -1041,11 +841,11 @@ def make_handler(manager, auth):
 
         def _post_credential_update(self, name):
             if not _valid_cred_name(name):
-                self._send_html(ui.error_404(username=self._authed_user), 404)
+                self._send_404()
                 return
             cred = self._manager.get_credential(name)
             if not cred:
-                self._send_html(ui.error_404(username=self._authed_user), 404)
+                self._send_404()
                 return
             form = self._read_form()
             value = form.get("value", "") or cred["value"]
@@ -1063,57 +863,30 @@ def make_handler(manager, auth):
         def _get_settings(self):
             cfg = self._manager.get_server_config()
             creds = self._manager.list_credentials()
-            self._send_html(
-                ui.settings(
-                    cfg,
-                    available_creds=[c["name"] for c in creds],
-                    username=self._authed_user,
-                )
-            )
+            self._render(ui.settings, cfg, available_creds=[c["name"] for c in creds])
 
         def _get_users_list(self):
             users = self._auth.list_user_records()
-            self._send_html(
-                ui.users_list(
-                    users,
-                    self._authed_user,
-                    username=self._authed_user,
-                    role=getattr(self, "_authed_role", None),
-                )
-            )
+            self._render(ui.users_list, users, self._authed_user)
 
         def _get_user_new(self):
-            self._send_html(
-                ui.user_new_form(
-                    username=self._authed_user,
-                    role=getattr(self, "_authed_role", None),
-                )
-            )
+            self._render(ui.user_new_form)
 
         def _get_user_password(self, target):
             if target not in self._auth.list_users():
-                self._send_html(ui.error_404(username=self._authed_user), 404)
+                self._send_404()
                 return
-            self._send_html(
-                ui.user_password_form(
-                    target,
-                    username=self._authed_user,
-                    role=getattr(self, "_authed_role", None),
-                )
-            )
+            self._render(ui.user_password_form, target)
 
         def _get_user_edit(self, target):
             if target not in self._auth.list_users():
-                self._send_html(ui.error_404(username=self._authed_user), 404)
+                self._send_404()
                 return
-            self._send_html(
-                ui.user_edit_form(
-                    target,
-                    user_role=self._auth.get_user_role(target) or "user",
-                    disabled=self._auth.get_user_disabled(target),
-                    username=self._authed_user,
-                    role=getattr(self, "_authed_role", None),
-                )
+            self._render(
+                ui.user_edit_form,
+                target,
+                user_role=self._auth.get_user_role(target) or "user",
+                disabled=self._auth.get_user_disabled(target),
             )
 
         def _post_user_create(self):
@@ -1125,39 +898,24 @@ def make_handler(manager, auth):
             if role not in ("admin", "user", "viewer"):
                 role = "user"
             if not uname or not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,49}$", uname):
-                self._send_html(
-                    ui.user_new_form(
-                        error="Invalid username. Use letters, numbers, ., - and _ only.",
-                        username=self._authed_user,
-                        role=getattr(self, "_authed_role", None),
-                    )
+                self._render(
+                    ui.user_new_form,
+                    error="Invalid username. Use letters, numbers, ., - and _ only.",
                 )
                 return
             if len(password) < 8:
-                self._send_html(
-                    ui.user_new_form(
-                        error="Password must be at least 8 characters.",
-                        username=self._authed_user,
-                        role=getattr(self, "_authed_role", None),
-                    )
+                self._render(
+                    ui.user_new_form,
+                    error="Password must be at least 8 characters.",
                 )
                 return
             if password != confirm:
-                self._send_html(
-                    ui.user_new_form(
-                        error="Passwords do not match.",
-                        username=self._authed_user,
-                        role=getattr(self, "_authed_role", None),
-                    )
-                )
+                self._render(ui.user_new_form, error="Passwords do not match.")
                 return
             if uname in self._auth.list_users():
-                self._send_html(
-                    ui.user_new_form(
-                        error=f'A user named "{uname}" already exists.',
-                        username=self._authed_user,
-                        role=getattr(self, "_authed_role", None),
-                    )
+                self._render(
+                    ui.user_new_form,
+                    error=f'A user named "{uname}" already exists.',
                 )
                 return
             self._auth.add_user(uname, password, role=role)
@@ -1165,29 +923,21 @@ def make_handler(manager, auth):
 
         def _post_user_password(self, target):
             if target not in self._auth.list_users():
-                self._send_html(ui.error_404(username=self._authed_user), 404)
+                self._send_404()
                 return
             form = self._read_form()
             password = form.get("password", "")
             confirm = form.get("confirm", "")
             if len(password) < 8:
-                self._send_html(
-                    ui.user_password_form(
-                        target,
-                        error="Password must be at least 8 characters.",
-                        username=self._authed_user,
-                        role=getattr(self, "_authed_role", None),
-                    )
+                self._render(
+                    ui.user_password_form,
+                    target,
+                    error="Password must be at least 8 characters.",
                 )
                 return
             if password != confirm:
-                self._send_html(
-                    ui.user_password_form(
-                        target,
-                        error="Passwords do not match.",
-                        username=self._authed_user,
-                        role=getattr(self, "_authed_role", None),
-                    )
+                self._render(
+                    ui.user_password_form, target, error="Passwords do not match."
                 )
                 return
             self._auth.change_password(target, password)
@@ -1206,43 +956,34 @@ def make_handler(manager, auth):
 
             if password or confirm:
                 if len(password) < 8:
-                    self._send_html(
-                        ui.user_edit_form(
-                            target,
-                            user_role=new_role
-                            or (self._auth.get_user_role(target) or "user"),
-                            disabled=self._auth.get_user_disabled(target),
-                            error="Password must be at least 8 characters.",
-                            username=self._authed_user,
-                            role=getattr(self, "_authed_role", None),
-                        )
+                    self._render(
+                        ui.user_edit_form,
+                        target,
+                        user_role=new_role
+                        or (self._auth.get_user_role(target) or "user"),
+                        disabled=self._auth.get_user_disabled(target),
+                        error="Password must be at least 8 characters.",
                     )
                     return
                 if password != confirm:
-                    self._send_html(
-                        ui.user_edit_form(
-                            target,
-                            user_role=new_role
-                            or (self._auth.get_user_role(target) or "user"),
-                            disabled=self._auth.get_user_disabled(target),
-                            error="Passwords do not match.",
-                            username=self._authed_user,
-                            role=getattr(self, "_authed_role", None),
-                        )
+                    self._render(
+                        ui.user_edit_form,
+                        target,
+                        user_role=new_role
+                        or (self._auth.get_user_role(target) or "user"),
+                        disabled=self._auth.get_user_disabled(target),
+                        error="Passwords do not match.",
                     )
                     return
 
             ok, error = self._auth.set_user_role(target, new_role)
             if not ok:
-                self._send_html(
-                    ui.user_edit_form(
-                        target,
-                        user_role=self._auth.get_user_role(target) or "user",
-                        disabled=self._auth.get_user_disabled(target),
-                        error=error,
-                        username=self._authed_user,
-                        role=getattr(self, "_authed_role", None),
-                    )
+                self._render(
+                    ui.user_edit_form,
+                    target,
+                    user_role=self._auth.get_user_role(target) or "user",
+                    disabled=self._auth.get_user_disabled(target),
+                    error=error,
                 )
                 return
 
@@ -1268,14 +1009,7 @@ def make_handler(manager, auth):
                 return
             if len(users) <= 1:
                 records = self._auth.list_user_records()
-                self._send_html(
-                    ui.users_list(
-                        records,
-                        self._authed_user,
-                        username=self._authed_user,
-                        role=getattr(self, "_authed_role", None),
-                    )
-                )
+                self._render(ui.users_list, records, self._authed_user)
                 return
             self._auth.delete_user(target)
             # if the user deleted themselves, log out
@@ -1300,15 +1034,7 @@ def make_handler(manager, auth):
             ok, error = self._auth.set_user_role(target, new_role)
             if not ok:
                 records = self._auth.list_user_records()
-                self._send_html(
-                    ui.users_list(
-                        records,
-                        self._authed_user,
-                        error=error,
-                        username=self._authed_user,
-                        role=getattr(self, "_authed_role", None),
-                    )
-                )
+                self._render(ui.users_list, records, self._authed_user, error=error)
                 return
 
             if target == self._authed_user and new_role != "admin":
@@ -1418,13 +1144,11 @@ def make_handler(manager, auth):
                 cfg["queue_pause_message"] = queue_pause_message
                 cfg["email_notifications"] = email_settings
                 creds = self._manager.list_credentials()
-                self._send_html(
-                    ui.settings(
-                        cfg,
-                        available_creds=[c["name"] for c in creds],
-                        error="Max builds must be a number.",
-                        username=self._authed_user,
-                    )
+                self._render(
+                    ui.settings,
+                    cfg,
+                    available_creds=[c["name"] for c in creds],
+                    error="Max builds must be a number.",
                 )
                 return
             try:
@@ -1438,13 +1162,11 @@ def make_handler(manager, auth):
                 cfg["queue_pause_message"] = queue_pause_message
                 cfg["email_notifications"] = email_settings
                 creds = self._manager.list_credentials()
-                self._send_html(
-                    ui.settings(
-                        cfg,
-                        available_creds=[c["name"] for c in creds],
-                        error="Max concurrent jobs must be a number.",
-                        username=self._authed_user,
-                    )
+                self._render(
+                    ui.settings,
+                    cfg,
+                    available_creds=[c["name"] for c in creds],
+                    error="Max concurrent jobs must be a number.",
                 )
                 return
             try:
@@ -1461,13 +1183,11 @@ def make_handler(manager, auth):
                 cfg["queue_pause_message"] = queue_pause_message
                 cfg["email_notifications"] = email_settings
                 creds = self._manager.list_credentials()
-                self._send_html(
-                    ui.settings(
-                        cfg,
-                        available_creds=[c["name"] for c in creds],
-                        error="SMTP port must be a number between 1 and 65535.",
-                        username=self._authed_user,
-                    )
+                self._render(
+                    ui.settings,
+                    cfg,
+                    available_creds=[c["name"] for c in creds],
+                    error="SMTP port must be a number between 1 and 65535.",
                 )
                 return
             email_settings["smtp_port"] = smtp_port
@@ -1484,13 +1204,11 @@ def make_handler(manager, auth):
                 cfg["queue_pause_message"] = queue_pause_message
                 cfg["email_notifications"] = email_settings
                 creds = self._manager.list_credentials()
-                self._send_html(
-                    ui.settings(
-                        cfg,
-                        available_creds=[c["name"] for c in creds],
-                        error="SMTP username is required when an SMTP credential is selected.",
-                        username=self._authed_user,
-                    )
+                self._render(
+                    ui.settings,
+                    cfg,
+                    available_creds=[c["name"] for c in creds],
+                    error="SMTP username is required when an SMTP credential is selected.",
                 )
                 return
             cfg = self._manager.get_server_config()
