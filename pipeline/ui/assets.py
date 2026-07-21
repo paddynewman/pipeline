@@ -5,9 +5,11 @@ __all__ = [
     "_FAVICON_HREF",
     "_CSS",
     "_TIMEAGO_JS",
+    "_LIVE_JS",
     "_PARAMS_EDITOR_JS",
     "_STEPS_EDITOR_JS",
     "_CREDENTIALS_EDITOR_JS",
+    "_TEMPLATE_ENV_EDITOR_JS",
 ]
 
 _BRAND_ICON_SVG = (
@@ -40,6 +42,19 @@ a:hover { text-decoration: underline; }
 .topnav a { color: #8b949e; text-decoration: none; font-size: 13px; padding: 4px 8px; border-radius: 6px; }
 .topnav a:hover { color: #f0f6fc; background: rgba(255,255,255,.08); text-decoration: none; }
 .topbar-spacer { flex: 1; }
+.queue-indicator {
+  display: inline-flex; align-items: center; gap: 6px; font-size: 12px;
+  color: #c9d1d9; padding: 4px 10px; border-radius: 6px;
+  border: 1px solid rgba(255,255,255,.2); background: rgba(255,255,255,.04);
+  white-space: nowrap;
+}
+.queue-indicator .queue-dot {
+  width: 8px; height: 8px; border-radius: 50%; background: #6e7681; display: inline-block;
+}
+.queue-indicator.queue-active .queue-dot { background: #2f81f7; animation: queue-pulse 1.5s ease-in-out infinite; }
+.queue-indicator.queue-paused { border-color: #bb8009; color: #e3b341; }
+.queue-indicator.queue-paused .queue-dot { background: #e3b341; animation: none; }
+@keyframes queue-pulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
 .user-menu { position: relative; display: inline-block; }
 .user-menu-btn {
   background: none; border: 1px solid rgba(255,255,255,.2); border-radius: 6px;
@@ -265,6 +280,28 @@ textarea.code {
 .param-row input { margin: 0; font-size: 13px; padding: 4px 8px; }
 .params-add { padding: 8px 10px; background: #f6f8fa; border-top: 1px solid #d0d7de; }
 .param-actions { display: flex; gap: 4px; justify-content: flex-end; }
+.envvars-editor { border: 1px solid #d0d7de; border-radius: 8px; overflow: hidden; margin-top: 6px; }
+.envvars-header, .envvar-row {
+  display: grid; grid-template-columns: 1fr 2fr 60px; gap: 8px;
+  padding: 7px 10px; align-items: center;
+}
+.envvars-header {
+  background: #f6f8fa; border-bottom: 1px solid #d0d7de; font-size: 11px;
+  font-weight: 600; text-transform: uppercase; letter-spacing: .4px; color: #57606a;
+}
+.envvar-row { border-bottom: 1px solid #f0f0f0; }
+.envvar-row:last-child { border-bottom: none; }
+.envvar-row input { margin: 0; font-size: 13px; padding: 4px 8px; }
+.envvars-add { padding: 8px 10px; background: #f6f8fa; border-top: 1px solid #d0d7de; }
+.template-doc {
+  margin-top: 10px; padding: 8px 10px; background: #f6f8fa;
+  border: 1px solid #d0d7de; border-radius: 6px; font-size: 12px;
+}
+.template-doc table { width: 100%; border-collapse: collapse; margin-top: 4px; table-layout: fixed; }
+.template-doc th, .template-doc td { text-align: left; padding: 3px 6px; vertical-align: top; word-break: break-word; }
+.template-doc th:first-child, .template-doc td:first-child { width: 40%; }
+.template-doc th { color: #57606a; font-size: 11px; text-transform: uppercase; letter-spacing: .4px; }
+.template-doc code { font-size: 12px; }
 .btn-param {
   background: #f6f8fa; border: 1px solid #d0d7de; color: #24292f; cursor: pointer;
   font-size: 12px; line-height: 1; padding: 5px 7px; border-radius: 6px;
@@ -393,6 +430,60 @@ _TIMEAGO_JS = """
 })();
 """
 
+_LIVE_JS = """
+(function () {
+  var badges = {
+    success: ['badge-success', '\u2713 Success'],
+    failure: ['badge-failure', '\u2717 Failure'],
+    running: ['badge-running', '\u29d7 Running'],
+    queued: ['badge-aborted', '\u23f3 Queued'],
+    aborted: ['badge-aborted', '\u25a0 Aborted']
+  };
+  window.badgeHtml = function (status) {
+    var b = badges[status] || ['badge-aborted', status || '\u2014'];
+    return '<span class="badge ' + b[0] + '">' + b[1] + '</span>';
+  };
+  window.escHtml = function (s) {
+    return (s === null || s === undefined ? '' : String(s))
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  };
+  window.fmtDuration = function (secs) {
+    if (secs === null || secs === undefined) return '\u2014';
+    secs = parseFloat(secs);
+    if (isNaN(secs)) return '\u2014';
+    if (secs < 60) return secs.toFixed(1) + 's';
+    var m = Math.floor(secs / 60);
+    var s = Math.floor(secs % 60);
+    return m + 'm ' + s + 's';
+  };
+  window.setTimeText = function (el, iso) {
+    if (!el) return;
+    el.setAttribute('data-time', iso || '');
+    el.title = iso || '';
+    el.textContent = window.timeAgo ? window.timeAgo(iso) : (iso || '\u2014');
+  };
+  var weathers = {
+    'sunny': ['weather-sunny', '\u2600\ufe0f', 'Stable'],
+    'partly-cloudy': ['weather-partly-cloudy', '\u26c5', 'Mostly stable'],
+    'cloudy': ['weather-cloudy', '\u2601\ufe0f', 'Mixed'],
+    'rainy': ['weather-rainy', '\U0001f327\ufe0f', 'Unstable'],
+    'stormy': ['weather-stormy', '\u26c8\ufe0f', 'Failing']
+  };
+  window.weatherHtml = function (w) {
+    if (!w) {
+      return '<span class="weather weather-none" title="No completed builds yet.">'
+        + '<span class="weather-icon">-</span></span>';
+    }
+    var m = weathers[w.condition] || weathers['cloudy'];
+    var title = m[2] + ': ' + (w.successes || 0) + '/' + (w.total || 0)
+      + ' recent completed builds succeeded (' + (w.score || 0) + '%).';
+    return '<span class="weather ' + m[0] + '" title="' + title + '">'
+      + '<span class="weather-icon">' + m[1] + '</span></span>';
+  };
+})();
+"""
+
 _PARAMS_EDITOR_JS = """
 (function () {
   var hidden = document.getElementById('params-json');
@@ -483,12 +574,71 @@ _PARAMS_EDITOR_JS = """
 })();
 """
 
+_TEMPLATE_ENV_EDITOR_JS = """
+(function () {
+  var hidden = document.getElementById('env-vars-json');
+  var editor = document.getElementById('env-vars-editor');
+  var addBtn = document.getElementById('add-env-var-btn');
+  if (!hidden || !editor || !addBtn) return;
+
+  function esc(s) {
+    return (s || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+  }
+
+  function getVars() {
+    try { return JSON.parse(hidden.value) || []; } catch (e) { return []; }
+  }
+
+  function renderRows(vars) {
+    editor.querySelectorAll('.envvar-row').forEach(function (r) { r.remove(); });
+    vars.forEach(function (v) {
+      var row = document.createElement('div');
+      row.className = 'envvar-row';
+      row.innerHTML =
+        '<input type="text" placeholder="ENV_VAR_NAME" value="' + esc(v.name) + '" data-field="name">' +
+        '<input type="text" placeholder="What this variable should contain" value="' + esc(v.description) + '" data-field="description">' +
+        '<div class="param-actions"><button type="button" class="btn-rm" title="Remove">&times;</button></div>';
+      editor.insertBefore(row, editor.querySelector('.envvars-add'));
+    });
+  }
+
+  function saveVars() {
+    var vars = [];
+    editor.querySelectorAll('.envvar-row').forEach(function (row) {
+      var name = row.querySelector('[data-field="name"]').value.trim();
+      var desc = row.querySelector('[data-field="description"]').value.trim();
+      if (name) vars.push({ name: name, description: desc });
+    });
+    hidden.value = JSON.stringify(vars);
+  }
+
+  renderRows(getVars());
+
+  editor.addEventListener('input', saveVars);
+  editor.addEventListener('click', function (e) {
+    var button = e.target.closest('button.btn-rm');
+    if (!button) return;
+    button.closest('.envvar-row').remove();
+    saveVars();
+  });
+
+  addBtn.addEventListener('click', function () {
+    saveVars();
+    var vars = getVars();
+    vars.push({ name: '', description: '' });
+    hidden.value = JSON.stringify(vars);
+    renderRows(vars);
+  });
+})();
+"""
+
 _STEPS_EDITOR_JS = """
 (function () {
   var hidden = document.getElementById('steps-json');
   var editor = document.getElementById('steps-editor');
   var addBtn = document.getElementById('add-step-btn');
   var availableCreds = window._pipelineAvailableCreds || [];
+  var templates = window._pipelineTemplates || [];
   if (!hidden || !editor || !addBtn) return;
 
   function esc(s) {
@@ -497,6 +647,29 @@ _STEPS_EDITOR_JS = """
 
   function escText(s) {
     return (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;');
+  }
+
+  function findTemplate(name) {
+    for (var i = 0; i < templates.length; i++) {
+      if (templates[i].name === name) return templates[i];
+    }
+    return null;
+  }
+
+  function rowHasTemplate(row) {
+    var sel = row.querySelector('[data-field="template"]');
+    if (!sel || !sel.value) return false;
+    return !!findTemplate(sel.value);
+  }
+
+  function templateOptionsHtml(selected) {
+    var html = '<option value="">None</option>';
+    templates.forEach(function (t) {
+      html += '<option value="' + esc(t.name) + '"' +
+        (t.name === selected ? ' selected' : '') + '>' +
+        escText(t.name) + '</option>';
+    });
+    return html;
   }
 
   function getSections() {
@@ -512,8 +685,73 @@ _STEPS_EDITOR_JS = """
       name: (section && section.name) || '',
       script: (section && section.script) || '',
       image: image || '',
-      reuse_container: !!(section && section.reuse_container)
+      reuse_container: !!(section && section.reuse_container),
+      template: (section && section.template) || ''
     };
+  }
+
+  function renderDoc(docEl, tmpl, missingName) {
+    if (!docEl) return;
+    if (missingName) {
+      docEl.innerHTML = '<div style="color:#cf222e">Template \\'' +
+        escText(missingName) + '\\' was not found. It may have been deleted.</div>';
+      docEl.hidden = false;
+      return;
+    }
+    if (!tmpl) { docEl.hidden = true; docEl.innerHTML = ''; return; }
+    var html = '';
+    if (tmpl.description) html += '<div>' + escText(tmpl.description) + '</div>';
+    var vars = tmpl.env_vars || [];
+    if (vars.length) {
+      html += '<div style="margin-top:6px">This template expects the following environment variables to be set.</div>';
+      html += '<table><thead><tr><th>Environment variable</th><th>Expected value</th></tr></thead><tbody>';
+      vars.forEach(function (v) {
+        html += '<tr><td><code>' + escText(v.name) + '</code></td><td>' +
+          escText(v.description || '') + '</td></tr>';
+      });
+      html += '</tbody></table>';
+    }
+    if (!html) { docEl.hidden = true; docEl.innerHTML = ''; return; }
+    docEl.innerHTML = html;
+    docEl.hidden = false;
+  }
+
+  function setEnabled(el, enabled) {
+    if (!el) return;
+    el.disabled = !enabled;
+    el.style.opacity = enabled ? '' : '0.6';
+  }
+
+  function applyTemplate(row, name) {
+    var imageEl = row.querySelector('[data-field="docker-image"]');
+    var scriptEl = row.querySelector('[data-field="script"]');
+    var docEl = row.querySelector('[data-field="template-doc"]');
+    var reuseEl = row.querySelector('[data-field="reuse-container"]');
+    if (!name) {
+      setEnabled(imageEl, true);
+      setEnabled(scriptEl, true);
+      if (reuseEl) reuseEl.disabled = false;
+      renderDoc(docEl, null);
+      updateReuseState(row);
+      return;
+    }
+    var tmpl = findTemplate(name);
+    if (!tmpl) {
+      setEnabled(imageEl, true);
+      setEnabled(scriptEl, true);
+      if (reuseEl) reuseEl.disabled = false;
+      renderDoc(docEl, null, name);
+      return;
+    }
+    if (imageEl) imageEl.value = tmpl.image || '';
+    if (scriptEl) scriptEl.value = tmpl.script || '';
+    setEnabled(imageEl, false);
+    setEnabled(scriptEl, false);
+    if (reuseEl) {
+      reuseEl.checked = false;
+      reuseEl.disabled = true;
+    }
+    renderDoc(docEl, tmpl);
   }
 
   function saveSections() {
@@ -526,20 +764,24 @@ _STEPS_EDITOR_JS = """
       var image = imageEl ? imageEl.value.trim() : '';
       var reuseEl = section.querySelector('[data-field="reuse-container"]');
       var reuse = reuseEl ? reuseEl.checked : false;
-      if (reuse && i > 0) {
+      var templateEl = section.querySelector('[data-field="template"]');
+      var template = templateEl ? templateEl.value : '';
+      var tmpl = template ? findTemplate(template) : null;
+      if (reuse && i > 0 && !tmpl) {
         var prevImage = rows[i - 1].querySelector('[data-field="docker-image"]');
         if (prevImage) image = prevImage.value.trim();
       }
-      if (name || script) {
+      if (name || script || template) {
         sections.push({
           name: name || ('Script ' + (sections.length + 1)),
           script: script,
           image: image,
-          reuse_container: reuse
+          reuse_container: reuse,
+          template: template
         });
       }
     });
-    if (!sections.length) sections.push({ name: 'Script 1', script: '', image: '', reuse_container: false });
+    if (!sections.length) sections.push({ name: 'Script 1', script: '', image: '', reuse_container: false, template: '' });
     hidden.value = JSON.stringify(sections);
   }
 
@@ -547,6 +789,11 @@ _STEPS_EDITOR_JS = """
     var reuseEl = row.querySelector('[data-field="reuse-container"]');
     var imageEl = row.querySelector('[data-field="docker-image"]');
     if (!reuseEl || !imageEl) return;
+    if (rowHasTemplate(row)) {
+      imageEl.disabled = true;
+      imageEl.style.opacity = '0.6';
+      return;
+    }
     var reuse = reuseEl.checked;
     if (reuse) {
       var rows = Array.from(editor.querySelectorAll('.script-section'));
@@ -582,18 +829,24 @@ _STEPS_EDITOR_JS = """
       var reuseColumnHtml = isFirst ?
         '<div style="width: 280px; min-width: 280px;"></div>' :
         '<div style="width: 280px; min-width: 280px;">' +
-        '<label style="display:flex;align-items:center;gap:6px;margin-bottom:4px;font-size:12px;font-weight:600;color:#57606a">Or reuse the previous container <span title="Uses the container from the previous step, including all filesystem and authentication state." style="display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;border:1px solid #8c959f;border-radius:50%;font-size:10px;line-height:1;cursor:help;">i</span></label>' +
+        '<label style="display:flex;align-items:center;gap:6px;margin-bottom:4px;font-size:12px;font-weight:600;color:#57606a">Reuse previous container <span title="Uses the container from the previous step, including all filesystem and authentication state." style="display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;border:1px solid #8c959f;border-radius:50%;font-size:10px;line-height:1;cursor:help;">i</span></label>' +
         '<div style="height:32px;display:flex;align-items:center;">' +
         '<input type="checkbox" data-field="reuse-container"' + (step.reuse_container ? ' checked' : '') + ' style="cursor:pointer;">' +
         '</div>' +
         '</div>';
+      var templateFieldHtml = templates.length ?
+        '<div style="flex: 1; min-width: 180px;">' +
+        '<label style="display:block;margin-bottom:4px;font-size:12px;font-weight:600;color:#57606a">Template</label>' +
+        '<select data-field="template" style="width:100%">' + templateOptionsHtml(step.template) + '</select>' +
+        '</div>' : '';
       row.innerHTML =
-        '<div class="script-section-top" style="display: flex; gap: 16px; align-items: flex-end;">' +
-        '<div style="flex: 1; min-width: 300px;">' +
+        '<div class="script-section-top" style="display: flex; gap: 16px; align-items: flex-end; flex-wrap: wrap;">' +
+        '<div style="flex: 1; min-width: 180px;">' +
         '<label style="display:block;margin-bottom:4px;font-size:12px;font-weight:600;color:#57606a">Name</label>' +
         '<input type="text" class="script-section-name" placeholder="Section name" value="' + esc(step.name) + '" data-field="name" style="width:100%">' +
         '</div>' +
-        '<div style="flex: 1; min-width: 300px;">' +
+        templateFieldHtml +
+        '<div style="flex: 1; min-width: 180px;">' +
         '<label style="display:block;margin-bottom:4px;font-size:12px;font-weight:600;color:#57606a">Docker Image</label>' +
         '<input type="text" placeholder="alpine:latest" value="' + esc(step.image) + '" data-field="docker-image" style="width:100%">' +
         '</div>' +
@@ -604,8 +857,10 @@ _STEPS_EDITOR_JS = """
         '<button type="button" class="btn-rm btn-section-rm" data-idx="' + i + '" title="Remove">&times;</button>' +
         '</div>' +
         '</div>' +
-        '<textarea class="code" rows="5" placeholder="#!/bin/sh&#10;set -eu&#10;echo Hello" data-field="script" style="margin-top:10px">' + escText(step.script) + '</textarea>';
+        '<textarea class="code" rows="5" placeholder="#!/bin/sh&#10;set -eu&#10;echo Hello" data-field="script" style="margin-top:10px">' + escText(step.script) + '</textarea>' +
+        '<div class="template-doc" data-field="template-doc" hidden></div>';
       editor.insertBefore(row, editor.querySelector('.steps-add'));
+      applyTemplate(row, step.template);
       updateReuseState(row);
     });
   }
@@ -629,6 +884,13 @@ _STEPS_EDITOR_JS = """
     saveSections();
   });
   editor.addEventListener('change', function (e) {
+    var templateSel = e.target.closest('[data-field="template"]');
+    if (templateSel) {
+      var trow = templateSel.closest('.script-section');
+      if (trow) applyTemplate(trow, templateSel.value);
+      saveSections();
+      return;
+    }
     var reuse = e.target.closest('[data-field="reuse-container"]');
     if (!reuse) return;
     var row = reuse.closest('.script-section');
@@ -656,7 +918,7 @@ _STEPS_EDITOR_JS = """
   addBtn.addEventListener('click', function () {
     saveSections();
     var sections = getSections();
-    sections.push({ name: 'Script ' + (sections.length + 1), script: '', image: '', reuse_container: false });
+    sections.push({ name: 'Script ' + (sections.length + 1), script: '', image: '', reuse_container: false, template: '' });
     hidden.value = JSON.stringify(sections);
     renderSections(sections);
   });

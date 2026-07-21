@@ -222,41 +222,15 @@ def _live_log_js(section_log_urls, status_url):
             }});
           }}
 
-          var badges = {{
-            success: ["badge-success", "\u2713 Success"],
-            failure: ["badge-failure", "\u2717 Failure"],
-            running: ["badge-running", "\u29d7 Running"],
-            queued: ["badge-aborted", "\u23f3 Queued"],
-            aborted: ["badge-aborted", "\u25a0 Aborted"]
-          }};
-
-          function fmtDuration(secs) {{
-            if (secs === null || secs === undefined) return "\u2014";
-            secs = parseFloat(secs);
-            if (secs < 60) return secs.toFixed(1) + "s";
-            var m = Math.floor(secs / 60);
-            var s = Math.floor(secs % 60);
-            return m + "m " + s + "s";
-          }}
-
           function finish(d) {{
             var badgeEl = document.getElementById("build-status-badge");
-            if (badgeEl) {{
-              var b = badges[d.status] || ["badge-aborted", d.status || "\u2014"];
-              badgeEl.innerHTML =
-                '<span class="badge ' + b[0] + '">' + b[1] + "</span>";
-            }}
+            if (badgeEl) badgeEl.innerHTML = window.badgeHtml(d.status);
             var durEl = document.getElementById("build-duration");
-            if (durEl) durEl.textContent = fmtDuration(d.duration);
+            if (durEl) durEl.textContent = window.fmtDuration(d.duration);
             if (d.finished_at) {{
-              var finTime = document.getElementById("build-finished-time");
-              if (finTime) {{
-                finTime.setAttribute("data-time", d.finished_at);
-                finTime.title = d.finished_at;
-                finTime.textContent = window.timeAgo
-                  ? window.timeAgo(d.finished_at)
-                  : d.finished_at;
-              }}
+              window.setTimeText(
+                document.getElementById("build-finished-time"), d.finished_at
+              );
               var finItem = document.getElementById("build-finished-item");
               if (finItem) finItem.style.display = "";
             }}

@@ -1,6 +1,79 @@
 from .layout import *  # noqa: F401,F403
 
 
+_JOB_DETAIL_POLL_JS = """
+      <script>
+      (function() {
+        var buildsUrl = window.__jobBuildsUrl;
+        var jobBase = window.__jobBase;
+        if (!buildsUrl) return;
+
+        function renderRow(b) {
+          var params = b.parameters || {};
+          var keys = Object.keys(params);
+          var paramsStr = keys.length
+            ? keys.map(function(k) { return k + "=" + params[k]; }).join(", ")
+            : "\u2014";
+          var tb = b.triggered_by || "";
+          var triggered;
+          if (tb === "cron") {
+            triggered = '<span class="text-muted" style="font-size:12px">\u23f1 Cron</span>';
+          } else if (tb) {
+            triggered = '<span style="font-size:12px">' + window.escHtml(tb) + '</span>';
+          } else {
+            triggered = '<span class="text-muted">\u2014</span>';
+          }
+          var tr = document.createElement("tr");
+          tr.setAttribute("data-build", b.id);
+          tr.innerHTML =
+            '<td class="col-num"><a href="' + jobBase + '/builds/' + b.id + '"># ' + b.id + '</a></td>' +
+            '<td class="col-time"><span data-time=""></span></td>' +
+            '<td class="col-dur">' + window.fmtDuration(b.duration) + '</td>' +
+            '<td class="col-status">' + window.badgeHtml(b.status) + '</td>' +
+            '<td style="font-size:12px">' + triggered + '</td>' +
+            '<td class="text-muted" style="font-size:12px">' + window.escHtml(paramsStr) + '</td>';
+          window.setTimeText(tr.querySelector(".col-time span"), b.started_at);
+          return tr;
+        }
+
+        function poll() {
+          fetch(buildsUrl + "?_=" + Date.now())
+            .then(function(r) { return r.json(); })
+            .then(function(d) {
+              var builds = d.builds || [];
+              var body = document.getElementById("build-history-body");
+              if (!body) return;
+              builds.forEach(function(b) {
+                var row = body.querySelector('tr[data-build="' + b.id + '"]');
+                if (row) {
+                  var durCell = row.querySelector(".col-dur");
+                  var statusCell = row.querySelector(".col-status");
+                  var timeSpan = row.querySelector(".col-time span");
+                  if (durCell) durCell.textContent = window.fmtDuration(b.duration);
+                  if (statusCell) statusCell.innerHTML = window.badgeHtml(b.status);
+                  if (timeSpan) window.setTimeText(timeSpan, b.started_at);
+                } else {
+                  body.insertBefore(renderRow(b), body.firstChild);
+                }
+              });
+              if (builds.length) {
+                var emptyEl = document.getElementById("build-history-empty");
+                var tableEl = document.getElementById("build-history-table");
+                if (emptyEl) emptyEl.hidden = true;
+                if (tableEl) tableEl.hidden = false;
+              }
+              var w = document.getElementById("job-weather");
+              if (w) w.innerHTML = window.weatherHtml(d.weather);
+            })
+            .catch(function() {});
+        }
+
+        setInterval(poll, 3000);
+      })();
+      </script>
+    """
+
+
 def dashboard(ctx, jobs):
     permissions = ctx.permissions
     can_manage_jobs = permissions["can_manage_jobs"]
@@ -58,7 +131,7 @@ def dashboard(ctx, jobs):
         row_style = ' style="opacity:0.6"' if not is_job_enabled else ""
         rows.append(
             f"""
-<tr data-labels="{esc(label_key)}"{row_style}>
+<tr data-labels="{esc(label_key)}" data-job="{esc(name)}"{row_style}>
   <td><a href="/jobs/{esc(name)}" class="job-link">{esc(name)}</a>{disabled_badge}{desc_html}</td>
   <td class="col-labels">{labels_cell_html}</td>
   <td class="col-num">{build_link}</td>
@@ -130,7 +203,50 @@ def dashboard(ctx, jobs):
       })();
       </script>
     """
-    return _page(ctx, "Dashboard", body, extra_js=filter_js)
+    poll_js = """
+      <script>
+      (function() {
+        var tbody = document.querySelector("tbody");
+        if (!tbody) return;
+
+        function updateRow(job) {
+          var row = tbody.querySelector('tr[data-job="' + job.name + '"]');
+          if (!row) return;
+          var lb = job.last_build;
+          var numCell = row.querySelector(".col-num");
+          var timeCell = row.querySelector(".col-time");
+          var durCell = row.querySelector(".col-dur");
+          var statusCell = row.querySelector(".col-status");
+          var weatherCell = row.querySelector(".col-weather");
+          if (lb) {
+            if (numCell) {
+              numCell.innerHTML = '<a href="/jobs/' + job.name + '/builds/'
+                + lb.id + '"># ' + lb.id + '</a>';
+            }
+            if (timeCell) {
+              timeCell.innerHTML = '<span data-time=""></span>';
+              window.setTimeText(timeCell.firstChild, lb.started_at);
+            }
+            if (durCell) durCell.textContent = window.fmtDuration(lb.duration);
+            if (statusCell) statusCell.innerHTML = window.badgeHtml(lb.status);
+          }
+          if (weatherCell) weatherCell.innerHTML = window.weatherHtml(job.weather);
+        }
+
+        function poll() {
+          fetch("/api/dashboard?_=" + Date.now())
+            .then(function(r) { return r.json(); })
+            .then(function(d) {
+              (d.jobs || []).forEach(updateRow);
+            })
+            .catch(function() {});
+        }
+
+        setInterval(poll, 3000);
+      })();
+      </script>
+    """
+    return _page(ctx, "Dashboard", body, extra_js=filter_js + poll_js)
 
 
 def job_detail(ctx, job, builds):
@@ -194,27 +310,26 @@ def job_detail(ctx, job, builds):
 </div>
 """
 
-    if not builds:
-        builds_html = '<div class="empty-state" style="padding:30px 0"><p>No builds yet.</p></div>'
-    else:
-        rows = []
-        for b in reversed(builds):
-            bid = b["id"]
-            params = b.get("parameters") or {}
-            params_str = (
-                ", ".join(f"{k}={v}" for k, v in params.items()) if params else "\u2014"
+    rows = []
+    for b in reversed(builds):
+        bid = b["id"]
+        params = b.get("parameters") or {}
+        params_str = (
+            ", ".join(f"{k}={v}" for k, v in params.items()) if params else "\u2014"
+        )
+        started = b.get("started_at") or b.get("queued_at", "")
+        tb = b.get("triggered_by") or ""
+        if tb == "cron":
+            triggered_html = (
+                '<span class="text-muted" style="font-size:12px">&#9201; Cron</span>'
             )
-            started = b.get("started_at") or b.get("queued_at", "")
-            tb = b.get("triggered_by") or ""
-            if tb == "cron":
-                triggered_html = '<span class="text-muted" style="font-size:12px">&#9201; Cron</span>'
-            elif tb:
-                triggered_html = f'<span style="font-size:12px">{esc(tb)}</span>'
-            else:
-                triggered_html = '<span class="text-muted">\u2014</span>'
-            rows.append(
-                f"""
-<tr>
+        elif tb:
+            triggered_html = f'<span style="font-size:12px">{esc(tb)}</span>'
+        else:
+            triggered_html = '<span class="text-muted">\u2014</span>'
+        rows.append(
+            f"""
+<tr data-build="{esc(bid)}">
   <td class="col-num"><a href="/jobs/{esc(name)}/builds/{esc(bid)}"># {esc(bid)}</a></td>
   <td class="col-time"><span data-time="{esc(started)}">{esc(started)}</span></td>
   <td class="col-dur">{esc(_fmt_duration(b.get("duration")))}</td>
@@ -223,10 +338,14 @@ def job_detail(ctx, job, builds):
   <td class="text-muted" style="font-size:12px">{esc(params_str)}</td>
 </tr>
 """
-            )
+        )
 
-        builds_html = f"""
-<div class="table-wrap">
+    empty_hidden = " hidden" if builds else ""
+    table_hidden = "" if builds else " hidden"
+    rows_html = "".join(rows)
+    builds_html = f"""
+<div class="empty-state" id="build-history-empty" style="padding:30px 0"{empty_hidden}><p>No builds yet.</p></div>
+<div class="table-wrap" id="build-history-table"{table_hidden}>
   <table>
     <thead>
       <tr>
@@ -238,7 +357,7 @@ def job_detail(ctx, job, builds):
         <th>Parameters</th>
       </tr>
     </thead>
-    <tbody>{"".join(rows)}</tbody>
+    <tbody id="build-history-body">{rows_html}</tbody>
   </table>
 </div>
 """
@@ -248,11 +367,19 @@ def job_detail(ctx, job, builds):
         + header
         + '<div class="section-title-row">'
         + '<div class="section-title">Build History</div>'
-        + _weather(job.get("weather"), compact=True)
+        + f'<span id="job-weather">{_weather(job.get("weather"), compact=True)}</span>'
         + "</div>"
         + builds_html
     )
-    return _page(ctx, name, body)
+    poll_header = _html(
+        f"""
+        <script>
+        window.__jobBuildsUrl = {json_str(f"/jobs/{name}/builds.json")};
+        window.__jobBase = {json_str(f"/jobs/{name}")};
+        </script>
+        """
+    )
+    return _page(ctx, name, body, extra_js=poll_header + _JOB_DETAIL_POLL_JS)
 
 
 def workspace(ctx, job, files):
@@ -311,7 +438,7 @@ def workspace(ctx, job, files):
     return _page(ctx, f"Workspace: {name}", body)
 
 
-def job_form(ctx, job=None, error=None, available_creds=None):
+def job_form(ctx, job=None, error=None, available_creds=None, templates=None):
     is_new = job is None
     title = "New Job" if is_new else f'Edit: {job["name"]}'
     bc = _breadcrumb(("Dashboard", "/"), (title, None))
@@ -353,6 +480,7 @@ def job_form(ctx, job=None, error=None, available_creds=None):
     if not steps:
         steps = [{"name": "Script 1", "script": "", "image": ""}]
     steps_json = json_str(steps)
+    env_script_val = esc(job.get("env_script", "")) if job else ""
     creds_json = json_str(job.get("credentials", []) if job else [])
     available_creds = available_creds or []
     git_cfg = (job.get("git") or {}) if job else {}
@@ -364,6 +492,8 @@ def job_form(ctx, job=None, error=None, available_creds=None):
 
     git_shallow_attr = " checked" if git_shallow else ""
     notify_on_failure_attr = " checked" if notify_on_failure else ""
+    mount_docker_socket = bool(job.get("mount_docker_socket", False)) if job else False
+    mount_docker_socket_attr = " checked" if mount_docker_socket else ""
     trigger_manual_attr = " checked" if trigger_type not in ("cron", "gitpoll") else ""
     trigger_cron_attr = " checked" if trigger_type == "cron" else ""
     trigger_gitpoll_attr = " checked" if trigger_type == "gitpoll" else ""
@@ -390,7 +520,7 @@ def job_form(ctx, job=None, error=None, available_creds=None):
         credentials_field = _html(
             f"""
             <div class="cred-editor" id="cred-editor">
-              <div class="cred-header"><span>Credential</span><span>Env Var Name</span><span>Type</span><span>Actions</span></div>
+              <div class="cred-header"><span>Credential</span><span>Environment Variable Name</span><span>Type</span><span>Actions</span></div>
               <div class="cred-add"><button type="button" id="add-cred-btn" class="btn btn-secondary btn-sm">+ Add</button></div>
             </div>
             <input type="hidden" id="credentials-json" name="credentials_json" value="{esc(creds_json)}">
@@ -513,6 +643,21 @@ def job_form(ctx, job=None, error=None, available_creds=None):
             </div>
 
             <div class="form-section">
+              <div class="form-section-title">Execution Environment</div>
+              <div class="form-group">
+                <label>Environment script <span class="hint">(optional Python, runs on the server before the steps)</span></label>
+                <textarea id="env_script" name="env_script" rows="6" spellcheck="false" placeholder="env[&quot;GREETING&quot;] = env.get(&quot;NAME&quot;, &quot;world&quot;).title()">{env_script_val}</textarea>
+                <div class="form-section-hint">Runs in the Pipeline server process (not in Docker) with access to the credentials. Update the <code>env</code> dict to add, change or remove variables; a value of <code>None</code> unsets a variable.</div>
+              </div>
+              <div class="form-group">
+                <label style="display:flex;align-items:center;gap:8px;font-weight:normal;cursor:pointer">
+                  <input type="checkbox" name="mount_docker_socket" value="1"{mount_docker_socket_attr} style="width:auto">
+                  Mount host Docker socket into this job's containers <span class="hint">(disabled by default; enable to let this job's steps talk to the host Docker daemon, e.g. to build images)</span>
+                </label>
+              </div>
+            </div>
+
+            <div class="form-section">
               <div class="form-section-title">Execution</div>
               <div class="form-section-hint">Add one or more steps. Every step runs inside an ephemeral Docker container.</div>
               <div class="form-group">
@@ -536,6 +681,9 @@ def job_form(ctx, job=None, error=None, available_creds=None):
 
     available_creds_js = (
         f"<script>window._pipelineAvailableCreds={json_str(available_creds)};</script>"
+    )
+    templates_js = (
+        f"<script>window._pipelineTemplates={json_str(templates or [])};</script>"
     )
     creds_js = (f"<script>{_CREDENTIALS_EDITOR_JS}</script>") if available_creds else ""
     trigger_js = """
@@ -668,5 +816,5 @@ def job_form(ctx, job=None, error=None, available_creds=None):
         ctx,
         title,
         body,
-        extra_js=f"{available_creds_js}<script>{_PARAMS_EDITOR_JS}</script><script>{_STEPS_EDITOR_JS}</script>{creds_js}{trigger_js}",
+        extra_js=f"{available_creds_js}{templates_js}<script>{_PARAMS_EDITOR_JS}</script><script>{_STEPS_EDITOR_JS}</script>{creds_js}{trigger_js}",
     )

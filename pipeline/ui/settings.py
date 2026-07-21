@@ -9,7 +9,6 @@ def settings(ctx, cfg, available_creds=None, error=None):
     queue_paused = bool(cfg.get("queue_paused", False))
     queue_pause_message = esc(cfg.get("queue_pause_message", "Job queue is paused."))
     default_script_header = esc(cfg.get("default_script_header", ""))
-    mount_docker_socket = bool(cfg.get("mount_docker_socket", False))
     email_cfg = cfg.get("email_notifications", {}) or {}
     available_creds = available_creds or []
     recipients = email_cfg.get("recipients", [])
@@ -24,7 +23,6 @@ def settings(ctx, cfg, available_creds=None, error=None):
     smtp_username_val = esc(email_cfg.get("smtp_username", ""))
     smtp_credential_val = email_cfg.get("smtp_credential", "")
     queue_paused_attr = " checked" if queue_paused else ""
-    mount_docker_socket_attr = " checked" if mount_docker_socket else ""
     smtp_credential_field = (
         (
             '<select id="notification-smtp-credential" name="notification_smtp_credential" style="max-width:300px">'
@@ -71,12 +69,6 @@ def settings(ctx, cfg, available_creds=None, error=None):
               <div class="form-group">
                 <label for="queue-pause-message">Queue pause banner message</label>
                 <input type="text" id="queue-pause-message" name="queue_pause_message" value="{queue_pause_message}" placeholder="Job queue is paused.">
-              </div>
-              <div class="form-group">
-                <label style="display:flex;align-items:center;gap:8px;font-weight:normal;cursor:pointer">
-                  <input type="checkbox" name="mount_docker_socket" value="1"{mount_docker_socket_attr} style="width:auto">
-                  Mount host Docker socket into job containers <span class="hint">(disabled by default; enable to allow job containers to talk to the host Docker daemon)</span>
-                </label>
               </div>
             </div>
 

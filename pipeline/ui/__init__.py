@@ -15,6 +15,7 @@ from .jobs import (
 )
 from .builds import build_detail, build_form
 from .credentials import credentials_form, credentials_list
+from .templates import template_form, templates_list
 from .users import (
     user_edit_form,
     user_new_form,

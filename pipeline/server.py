@@ -31,6 +31,10 @@ def _valid_cred_name(name):
     return _valid_job_name(name)
 
 
+def _valid_template_name(name):
+    return _valid_job_name(name)
+
+
 def _compile_param_regex(pattern):
     if not pattern:
         return None
@@ -74,11 +78,14 @@ ROUTES = [
     # GET
     Route("GET", "/", "_get_dashboard"),
     Route("GET", "/logout", "_get_logout"),
+    Route("GET", "/api/queue", "_get_queue_status"),
+    Route("GET", "/api/dashboard", "_get_dashboard_status"),
     Route(
         "GET", "/cron/preview", "_get_cron_preview", roles=("admin",), wants_query=True
     ),
     Route("GET", "/jobs/new", "_get_job_new", roles=("admin",)),
     Route("GET", "/jobs/{name}", "_get_job_detail"),
+    Route("GET", "/jobs/{name}/builds.json", "_get_job_builds_status"),
     Route("GET", "/jobs/{name}/edit", "_get_job_edit", roles=("admin",)),
     Route(
         "GET",
@@ -110,6 +117,9 @@ ROUTES = [
     Route("GET", "/credentials", "_get_credentials_list", roles=("admin",)),
     Route("GET", "/credentials/new", "_get_credential_new", roles=("admin",)),
     Route("GET", "/credentials/{name}/edit", "_get_credential_edit", roles=("admin",)),
+    Route("GET", "/templates", "_get_templates_list", roles=("admin",)),
+    Route("GET", "/templates/new", "_get_template_new", roles=("admin",)),
+    Route("GET", "/templates/{name}/edit", "_get_template_edit", roles=("admin",)),
     Route("GET", "/settings", "_get_settings", roles=("admin",)),
     Route("GET", "/settings/users", "_get_users_list", roles=("admin",)),
     Route("GET", "/settings/users/new", "_get_user_new", roles=("admin",)),
@@ -154,6 +164,19 @@ ROUTES = [
         "POST",
         "/credentials/{name}/delete",
         "_post_credential_delete",
+        roles=("admin",),
+    ),
+    Route("POST", "/templates/new", "_post_template_create", roles=("admin",)),
+    Route(
+        "POST",
+        "/templates/{name}/edit",
+        "_post_template_update",
+        roles=("admin",),
+    ),
+    Route(
+        "POST",
+        "/templates/{name}/delete",
+        "_post_template_delete",
         roles=("admin",),
     ),
     Route("POST", "/settings", "_post_settings", roles=("admin",)),
@@ -224,7 +247,25 @@ def make_handler(manager, auth):
         def _log_username(self):
             return getattr(self, "_authed_user", None) or self._current_user() or "-"
 
+        def _is_poll_request(self):
+            """True for the UI's periodic polling endpoints (live updates)."""
+            path = self.path.split("?", 1)[0]
+            if path in ("/api/queue", "/api/dashboard"):
+                return True
+            if path.endswith("/builds.json") or path.endswith("/status"):
+                return True
+            return bool(re.search(r"/log/\d+$", path))
+
         def log_message(self, fmt, *args):
+            # Suppress successful polling requests so live-update traffic does
+            # not flood the access log; failures are still logged.
+            if self._is_poll_request():
+                code = args[1] if len(args) > 1 else None
+                try:
+                    if 200 <= int(code) < 400:
+                        return
+                except (TypeError, ValueError):
+                    pass
             _access_log.info(
                 "%s %s %s", self.address_string(), self._log_username(), fmt % args
             )
@@ -434,9 +475,37 @@ def make_handler(manager, auth):
             jobs = self._manager.list_jobs()
             self._render(ui.dashboard, jobs)
 
+        def _get_queue_status(self):
+            self._send_json(self._manager.get_queue_state())
+
+        def _get_dashboard_status(self):
+            jobs = self._manager.list_jobs()
+            result = []
+            for job in jobs:
+                lb = job.get("last_build") or None
+                weather = job.get("weather")
+                entry = {
+                    "name": job["name"],
+                    "last_build": None,
+                    "weather": weather,
+                }
+                if lb:
+                    entry["last_build"] = {
+                        "id": lb.get("id"),
+                        "status": lb.get("status"),
+                        "duration": lb.get("duration"),
+                        "started_at": lb.get("started_at") or lb.get("queued_at", ""),
+                    }
+                result.append(entry)
+            self._send_json({"jobs": result})
+
         def _get_job_new(self):
             creds = self._manager.list_credentials()
-            self._render(ui.job_form, available_creds=[c["name"] for c in creds])
+            self._render(
+                ui.job_form,
+                available_creds=[c["name"] for c in creds],
+                templates=self._manager.list_templates(),
+            )
 
         def _get_job_detail(self, name):
             job = self._load_job_or_404(name)
@@ -446,12 +515,45 @@ def make_handler(manager, auth):
             job["weather"] = compute_weather(builds)
             self._render(ui.job_detail, job, builds)
 
+        def _get_job_builds_status(self, name):
+            if not _valid_job_name(name):
+                self._send_json({"error": "not found"}, 404)
+                return
+            job = self._manager.get_job(name)
+            if not job:
+                self._send_json({"error": "not found"}, 404)
+                return
+            builds = self._manager.list_builds(name)
+            result = []
+            for b in builds:
+                result.append(
+                    {
+                        "id": b.get("id"),
+                        "status": b.get("status"),
+                        "duration": b.get("duration"),
+                        "started_at": b.get("started_at") or b.get("queued_at", ""),
+                        "triggered_by": b.get("triggered_by") or "",
+                        "parameters": b.get("parameters") or {},
+                    }
+                )
+            self._send_json(
+                {
+                    "builds": result,
+                    "weather": compute_weather(builds),
+                }
+            )
+
         def _get_job_edit(self, name):
             job = self._load_job_or_404(name)
             if job is None:
                 return
             creds = self._manager.list_credentials()
-            self._render(ui.job_form, job, available_creds=[c["name"] for c in creds])
+            self._render(
+                ui.job_form,
+                job,
+                available_creds=[c["name"] for c in creds],
+                templates=self._manager.list_templates(),
+            )
 
         def _get_build_form(self, name, query=None):
             job = self._load_job_or_404(name)
@@ -620,6 +722,7 @@ def make_handler(manager, auth):
                         "name": name,
                         "description": form.get("description", "").strip(),
                         "steps": _load_raw_steps_json(form.get("steps_json", "[]")),
+                        "env_script": form.get("env_script", ""),
                         "parameters": _load_raw_params_json(
                             form.get("params_json", "[]")
                         ),
@@ -642,6 +745,7 @@ def make_handler(manager, auth):
                             "name": name,
                             "description": form.get("description", "").strip(),
                             "steps": _load_raw_steps_json(form.get("steps_json", "[]")),
+                            "env_script": form.get("env_script", ""),
                             "parameters": _load_raw_params_json(
                                 form.get("params_json", "[]")
                             ),
@@ -660,12 +764,14 @@ def make_handler(manager, auth):
                 "description": form.get("description", "").strip(),
                 "labels": _parse_labels(form.get("labels", "")),
                 "steps": steps,
+                "env_script": form.get("env_script", ""),
                 "parameters": params,
                 "credentials": _parse_credentials_json(
                     form.get("credentials_json", "[]")
                 ),
                 "max_builds": _parse_max_builds(form.get("max_builds", "")),
                 "notify_on_failure": notify_on_failure,
+                "mount_docker_socket": form.get("mount_docker_socket") == "1",
                 "trigger": trigger,
                 "git": _parse_git_config(form),
             }
@@ -687,6 +793,7 @@ def make_handler(manager, auth):
                     "name": job["name"],
                     "description": form.get("description", "").strip(),
                     "steps": _load_raw_steps_json(form.get("steps_json", "[]")),
+                    "env_script": form.get("env_script", ""),
                     "parameters": _load_raw_params_json(form.get("params_json", "[]")),
                     "credentials": _parse_credentials_json(
                         form.get("credentials_json", "[]")
@@ -708,6 +815,7 @@ def make_handler(manager, auth):
                         "name": job["name"],
                         "description": form.get("description", "").strip(),
                         "steps": _load_raw_steps_json(form.get("steps_json", "[]")),
+                        "env_script": form.get("env_script", ""),
                         "parameters": _load_raw_params_json(
                             form.get("params_json", "[]")
                         ),
@@ -727,12 +835,14 @@ def make_handler(manager, auth):
             job["description"] = form.get("description", "").strip()
             job["labels"] = _parse_labels(form.get("labels", ""))
             job["steps"] = steps
+            job["env_script"] = form.get("env_script", "")
             job["parameters"] = params
             job["credentials"] = _parse_credentials_json(
                 form.get("credentials_json", "[]")
             )
             job["max_builds"] = _parse_max_builds(form.get("max_builds", ""))
             job["notify_on_failure"] = notify_on_failure
+            job["mount_docker_socket"] = form.get("mount_docker_socket") == "1"
             job["enabled"] = form.get("disabled") != "1"
             job["trigger"] = trigger
             job["git"] = _parse_git_config(form)
@@ -859,6 +969,71 @@ def make_handler(manager, auth):
                 return
             self._manager.delete_credential(name)
             self._redirect("/credentials")
+
+        # ── Templates handlers ───────────────────────────────────────────────
+
+        def _get_templates_list(self):
+            self._render(ui.templates_list, self._manager.list_templates())
+
+        def _get_template_new(self):
+            self._render(ui.template_form)
+
+        def _get_template_edit(self, name):
+            if not _valid_template_name(name):
+                self._send_404()
+                return
+            template = self._manager.get_template(name)
+            if not template:
+                self._send_404()
+                return
+            self._render(ui.template_form, template)
+
+        def _post_template_create(self):
+            form = self._read_form()
+            name = form.get("name", "").strip()
+            if not _valid_template_name(name):
+                self._render(
+                    ui.template_form,
+                    self._template_from_form(name, form),
+                    error="Invalid name. Use letters, numbers, hyphens and underscores only.",
+                )
+                return
+            if self._manager.get_template(name):
+                self._render(
+                    ui.template_form,
+                    self._template_from_form(name, form),
+                    error=f'A template named "{name}" already exists.',
+                )
+                return
+            self._manager.save_template(self._template_from_form(name, form))
+            self._redirect("/templates")
+
+        def _post_template_update(self, name):
+            if not _valid_template_name(name):
+                self._send_404()
+                return
+            if not self._manager.get_template(name):
+                self._send_404()
+                return
+            form = self._read_form()
+            self._manager.save_template(self._template_from_form(name, form))
+            self._redirect("/templates")
+
+        def _post_template_delete(self, name):
+            if not _valid_template_name(name):
+                self._redirect("/templates")
+                return
+            self._manager.delete_template(name)
+            self._redirect("/templates")
+
+        def _template_from_form(self, name, form):
+            return {
+                "name": name,
+                "description": form.get("description", "").strip(),
+                "image": form.get("image", "").strip(),
+                "script": form.get("script", ""),
+                "env_vars": _parse_template_env_vars(form.get("env_vars_json", "[]")),
+            }
 
         def _get_settings(self):
             cfg = self._manager.get_server_config()
@@ -1120,7 +1295,6 @@ def make_handler(manager, auth):
         def _post_settings(self):
             form = self._read_form()
             default_script_header = form.get("default_script_header", "")
-            mount_docker_socket = form.get("mount_docker_socket") == "1"
             queue_paused = form.get("queue_paused") == "1"
             queue_pause_message = form.get("queue_pause_message", "").strip()
             email_settings = {
@@ -1139,7 +1313,6 @@ def make_handler(manager, auth):
             except (TypeError, ValueError):
                 cfg = self._manager.get_server_config()
                 cfg["default_script_header"] = default_script_header
-                cfg["mount_docker_socket"] = mount_docker_socket
                 cfg["queue_paused"] = queue_paused
                 cfg["queue_pause_message"] = queue_pause_message
                 cfg["email_notifications"] = email_settings
@@ -1157,7 +1330,6 @@ def make_handler(manager, auth):
                 cfg = self._manager.get_server_config()
                 cfg["default_script_header"] = default_script_header
                 cfg["max_builds"] = max_builds
-                cfg["mount_docker_socket"] = mount_docker_socket
                 cfg["queue_paused"] = queue_paused
                 cfg["queue_pause_message"] = queue_pause_message
                 cfg["email_notifications"] = email_settings
@@ -1178,7 +1350,6 @@ def make_handler(manager, auth):
                 cfg["default_script_header"] = default_script_header
                 cfg["max_builds"] = max_builds
                 cfg["max_concurrent_jobs"] = max_concurrent_jobs
-                cfg["mount_docker_socket"] = mount_docker_socket
                 cfg["queue_paused"] = queue_paused
                 cfg["queue_pause_message"] = queue_pause_message
                 cfg["email_notifications"] = email_settings
@@ -1199,7 +1370,6 @@ def make_handler(manager, auth):
                 cfg["default_script_header"] = default_script_header
                 cfg["max_builds"] = max_builds
                 cfg["max_concurrent_jobs"] = max_concurrent_jobs
-                cfg["mount_docker_socket"] = mount_docker_socket
                 cfg["queue_paused"] = queue_paused
                 cfg["queue_pause_message"] = queue_pause_message
                 cfg["email_notifications"] = email_settings
@@ -1215,7 +1385,6 @@ def make_handler(manager, auth):
             cfg["max_builds"] = max_builds
             cfg["max_concurrent_jobs"] = max_concurrent_jobs
             cfg["default_script_header"] = default_script_header
-            cfg["mount_docker_socket"] = mount_docker_socket
             cfg["queue_paused"] = queue_paused
             cfg["queue_pause_message"] = queue_pause_message
             cfg["email_notifications"] = email_settings
@@ -1266,7 +1435,8 @@ def _parse_steps_json(raw):
             continue
         name = str(section.get("name", "")).strip()
         script = str(section.get("script", ""))
-        if not name and not script:
+        template = str(section.get("template", "")).strip()
+        if not name and not script and not template:
             continue
         image = _parse_step_image(section)
         result.append(
@@ -1275,11 +1445,35 @@ def _parse_steps_json(raw):
                 "script": script,
                 "image": image,
                 "reuse_container": bool(section.get("reuse_container", False)),
+                "template": template,
             }
         )
     if result:
         return result
     return [{"name": "Script 1", "script": "", "image": ""}]
+
+
+def _parse_template_env_vars(raw):
+    try:
+        items = json.loads(raw)
+    except (ValueError, TypeError):
+        return []
+    if not isinstance(items, list):
+        return []
+    result = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name", "")).strip()
+        if not name:
+            continue
+        result.append(
+            {
+                "name": name,
+                "description": str(item.get("description", "")).strip(),
+            }
+        )
+    return result
 
 
 def _parse_step_image(section):

@@ -22,9 +22,11 @@ __all__ = [
     "_FAVICON_HREF",
     "_CSS",
     "_TIMEAGO_JS",
+    "_LIVE_JS",
     "_PARAMS_EDITOR_JS",
     "_STEPS_EDITOR_JS",
     "_CREDENTIALS_EDITOR_JS",
+    "_TEMPLATE_ENV_EDITOR_JS",
 ]
 
 
@@ -74,6 +76,8 @@ def _page(ctx, title, body, extra_js=""):
     nav_links = ['<a href="/">Dashboard</a>']
     if permissions["can_manage_credentials"]:
         nav_links.append('<a href="/credentials">Credentials</a>')
+    if permissions["can_manage_jobs"]:
+        nav_links.append('<a href="/templates">Templates</a>')
     if permissions["can_manage_settings"]:
         nav_links.append('<a href="/settings">Settings</a>')
     nav_html = " ".join(nav_links)
@@ -120,6 +124,9 @@ def _page(ctx, title, body, extra_js=""):
     <span class="brand">PIPELINE</span>
     <nav class="topnav">{nav_html}</nav>
     <span class="topbar-spacer"></span>
+    <span class="queue-indicator" id="queue-indicator" title="Job queue" hidden>
+      <span class="queue-dot"></span><span id="queue-indicator-text">Idle</span>
+    </span>
     {new_job_html}
     {user_html}
   </header>
@@ -138,6 +145,42 @@ def _page(ctx, title, body, extra_js=""):
     }});
   </script>
   <script>{_TIMEAGO_JS}</script>
+  <script>{_LIVE_JS}</script>
+  <script>
+  (function () {{
+    var el = document.getElementById("queue-indicator");
+    var textEl = document.getElementById("queue-indicator-text");
+    if (!el || !textEl) return;
+
+    function render(d) {{
+      var running = parseInt(d.running_count || 0, 10);
+      var queued = parseInt(d.queued_count || 0, 10);
+      el.hidden = false;
+      el.classList.toggle("queue-active", running > 0 || queued > 0);
+      el.classList.toggle("queue-paused", !!d.paused);
+      var parts = [running + " running"];
+      if (queued > 0) parts.push(queued + " queued");
+      var summary = parts.join(" \u00b7 ");
+      if (d.paused) summary = "Paused \u00b7 " + summary;
+      textEl.textContent = (running === 0 && queued === 0 && !d.paused)
+        ? "Idle"
+        : summary;
+      el.title = "Job queue: " + running + " running, " + queued + " queued"
+        + " (limit: " + (d.max_concurrent_jobs || 1) + ")"
+        + (d.paused ? " \u2014 paused" : "");
+    }}
+
+    function poll() {{
+      fetch("/api/queue?_=" + Date.now())
+        .then(function (r) {{ return r.json(); }})
+        .then(render)
+        .catch(function () {{}});
+    }}
+
+    setInterval(poll, 3000);
+    poll();
+  }})();
+  </script>
   {extra_js}
 </body></html>
 """

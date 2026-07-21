@@ -263,9 +263,48 @@ class JobManager:
 
     def clear_workspace(self, job_name):
         workspace = self._workspace_dir(job_name)
-        if os.path.isdir(workspace):
-            shutil.rmtree(workspace)
-        os.makedirs(workspace, exist_ok=True)
+        self._reset_workspace(workspace)
+
+    def _reset_workspace(self, workspace_dir):
+        """Empty and recreate the workspace directory.
+
+        Job steps run in Docker containers as root, so they may leave behind
+        files the server process cannot delete. When a plain removal fails with
+        a permission error, fall back to removing the directory from inside a
+        container (which runs as root)."""
+        if os.path.isdir(workspace_dir):
+            try:
+                shutil.rmtree(workspace_dir)
+            except (PermissionError, OSError):
+                self._docker_remove_path(workspace_dir)
+        os.makedirs(workspace_dir, exist_ok=True)
+
+    def _docker_remove_path(self, path):
+        """Remove a path using a throwaway root container (best effort)."""
+        real = os.path.realpath(path)
+        parent = os.path.dirname(real)
+        base = os.path.basename(real)
+        if not parent or not base:
+            return
+        try:
+            subprocess.run(
+                [
+                    "docker",
+                    "run",
+                    "--rm",
+                    "-v",
+                    "%s:/target" % parent,
+                    "alpine:latest",
+                    "rm",
+                    "-rf",
+                    "/target/%s" % base,
+                ],
+                capture_output=True,
+                timeout=120,
+                env=os.environ.copy(),
+            )
+        except Exception:
+            pass
 
     def _credentials_path(self):
         return os.path.join(self.data_dir, "credentials.json")
@@ -340,6 +379,86 @@ class JobManager:
         raw = [c for c in raw if c["name"] != name]
         write_json(path, raw)
 
+    def _templates_dir(self):
+        return os.path.join(self.data_dir, "templates")
+
+    def _template_path(self, name):
+        return os.path.join(self._templates_dir(), "%s.json" % name)
+
+    def _migrate_templates_file(self):
+        """Migrate a legacy single templates.json into per-template files."""
+        legacy = os.path.join(self.data_dir, "templates.json")
+        if not os.path.isfile(legacy):
+            return
+        try:
+            with open(legacy) as f:
+                raw = json.load(f)
+        except (ValueError, OSError):
+            return
+        os.makedirs(self._templates_dir(), exist_ok=True)
+        for entry in raw if isinstance(raw, list) else []:
+            template = normalize_template(entry)
+            if not template:
+                continue
+            path = self._template_path(template["name"])
+            if not os.path.exists(path):
+                write_json(path, template)
+        try:
+            os.unlink(legacy)
+        except OSError:
+            pass
+
+    def list_templates(self):
+        self._migrate_templates_file()
+        templates_dir = self._templates_dir()
+        if not os.path.isdir(templates_dir):
+            return []
+        result = []
+        for fname in sorted(os.listdir(templates_dir)):
+            if not fname.endswith(".json"):
+                continue
+            try:
+                with open(os.path.join(templates_dir, fname)) as f:
+                    template = normalize_template(json.load(f))
+            except (ValueError, OSError):
+                continue
+            if template:
+                result.append(template)
+        result.sort(key=lambda t: t["name"])
+        return result
+
+    def get_template(self, name):
+        for template in self.list_templates():
+            if template["name"] == name:
+                return template
+        return None
+
+    def save_template(self, template):
+        template = normalize_template(template)
+        if not template:
+            return
+        os.makedirs(self._templates_dir(), exist_ok=True)
+        write_json(self._template_path(template["name"]), template)
+
+    def delete_template(self, name):
+        templates_dir = self._templates_dir()
+        if not os.path.isdir(templates_dir):
+            return
+        for fname in os.listdir(templates_dir):
+            if not fname.endswith(".json"):
+                continue
+            path = os.path.join(templates_dir, fname)
+            try:
+                with open(path) as f:
+                    template = normalize_template(json.load(f))
+            except (ValueError, OSError):
+                continue
+            if template and template["name"] == name:
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
+
     def _server_config_path(self):
         return os.path.join(self.data_dir, "server.json")
 
@@ -352,7 +471,6 @@ class JobManager:
                 "queue_paused": False,
                 "queue_pause_message": DEFAULT_QUEUE_PAUSE_MESSAGE,
                 "default_script_header": _normalize_script_header(None),
-                "mount_docker_socket": False,
                 "email_notifications": _normalize_email_settings(None),
                 "git_poll_interval": 300,
             }
@@ -372,9 +490,6 @@ class JobManager:
         cfg["default_script_header"] = _normalize_script_header(
             cfg.get("default_script_header")
         )
-        cfg["mount_docker_socket"] = _normalize_mount_docker_socket(
-            cfg.get("mount_docker_socket")
-        )
         cfg["email_notifications"] = _normalize_email_settings(
             cfg.get("email_notifications")
         )
@@ -391,9 +506,6 @@ class JobManager:
         )
         cfg["default_script_header"] = _normalize_script_header(
             cfg.get("default_script_header")
-        )
-        cfg["mount_docker_socket"] = _normalize_mount_docker_socket(
-            cfg.get("mount_docker_socket")
         )
         cfg["email_notifications"] = _normalize_email_settings(
             cfg.get("email_notifications")
@@ -456,7 +568,10 @@ class JobManager:
     def delete_job(self, name):
         job_dir = self._job_dir(name)
         if os.path.isdir(job_dir):
-            shutil.rmtree(job_dir)
+            try:
+                shutil.rmtree(job_dir)
+            except (PermissionError, OSError):
+                self._docker_remove_path(job_dir)
 
     def list_builds(self, job_name):
         builds_dir = os.path.join(self._job_dir(job_name), "builds")
@@ -593,6 +708,9 @@ class JobManager:
             }
             info_path = os.path.join(build_dir, "info.json")
             write_json(info_path, info)
+            # Write the script files now so their contents are viewable on the
+            # build page immediately, even while the build is queued.
+            self._write_section_scripts(build_dir, execution_sections)
 
             self._queued_builds.append(
                 {
@@ -618,16 +736,36 @@ class JobManager:
                     "script": self._git_checkout_script(git_cfg),
                 }
             )
-        for i, section in enumerate(job.get("steps") or []):
+        if (job.get("env_script") or "").strip():
             sections.append(
                 {
-                    "kind": "script",
-                    "name": section.get("name") or f"Script {i + 1}",
-                    "script": section.get("script", ""),
-                    "image": _normalize_step_image(section),
-                    "reuse_container": bool(section.get("reuse_container", False)),
+                    "kind": "env",
+                    "name": "Environment Script",
+                    "script": job.get("env_script") or "",
                 }
             )
+        for i, section in enumerate(job.get("steps") or []):
+            entry = {
+                "kind": "script",
+                "name": section.get("name") or f"Script {i + 1}",
+                "script": section.get("script", ""),
+                "image": _normalize_step_image(section),
+                "reuse_container": bool(section.get("reuse_container", False)),
+            }
+            template_name = (section.get("template") or "").strip()
+            if template_name:
+                entry["template"] = template_name
+                template = self.get_template(template_name)
+                if not template:
+                    entry["template_error"] = (
+                        "Step template '%s' no longer exists." % template_name
+                    )
+                else:
+                    # Templates are always resolved from the current definition
+                    # so central edits apply and the step cannot be tampered with.
+                    entry["image"] = template.get("image") or entry["image"]
+                    entry["script"] = template.get("script") or ""
+            sections.append(entry)
         return sections
 
     def _section_details(self, section):
@@ -637,6 +775,22 @@ class JobManager:
         if image:
             return image
         return ""
+
+    def _write_section_scripts(self, build_dir, execution_sections):
+        """Write each section's script file so its contents can be viewed on
+        the build page as soon as the build exists (queued or running)."""
+        for index, section in enumerate(execution_sections):
+            if section["kind"] == "env":
+                script_content = section.get("script", "")
+            else:
+                script_content = self._prepare_script(
+                    section.get("script", ""),
+                    image=section.get("image"),
+                )
+            script_path = os.path.join(build_dir, "script-%d.sh" % (index + 1))
+            with open(script_path, "w") as f:
+                f.write(script_content)
+            os.chmod(script_path, stat.S_IRWXU)
 
     def _git_checkout_script(self, git_cfg):
         url = git_cfg["url"]
@@ -683,9 +837,7 @@ class JobManager:
         if git_cfg:
             os.makedirs(workspace_dir, exist_ok=True)
         else:
-            if os.path.isdir(workspace_dir):
-                shutil.rmtree(workspace_dir)
-            os.makedirs(workspace_dir)
+            self._reset_workspace(workspace_dir)
 
         env = {}
         env["JOB_NAME"] = job["name"]
@@ -697,18 +849,11 @@ class JobManager:
 
         cred_bindings = job.get("credentials") or []
         creds_ready = False
+        mount_docker_socket = bool(job.get("mount_docker_socket", False))
 
         # Write every section's script file upfront so each step's details are
         # available (and its header is clickable) before the step has run.
-        for index, section in enumerate(execution_sections):
-            script_content = self._prepare_script(
-                section.get("script", ""),
-                image=section.get("image"),
-            )
-            script_path = os.path.join(build_dir, "script-%d.sh" % (index + 1))
-            with open(script_path, "w") as f:
-                f.write(script_content)
-            os.chmod(script_path, stat.S_IRWXU)
+        self._write_section_scripts(build_dir, execution_sections)
 
         exit_code = -1
         last_index = 0
@@ -756,7 +901,18 @@ class JobManager:
 
                 try:
                     with open(section_log_path, "w", newline="") as section_log:
-                        if section["kind"] == "script":
+                        if section["kind"] == "env":
+                            exit_code = self._run_env_script(
+                                section.get("script", ""),
+                                env,
+                                section_log,
+                            )
+                        elif section.get("template_error"):
+                            section_log.write(
+                                "[Error] %s\n" % section["template_error"]
+                            )
+                            exit_code = 1
+                        elif section["kind"] == "script":
                             reuse = section.get("reuse_container", False) and (
                                 active_container is not None
                             )
@@ -788,6 +944,7 @@ class JobManager:
                                     workspace_dir,
                                     build_dir,
                                     section_log,
+                                    mount_docker_socket,
                                 )
                                 if not started:
                                     exit_code = 1
@@ -813,6 +970,7 @@ class JobManager:
                                     build_dir,
                                     job["name"],
                                     build_id,
+                                    mount_docker_socket,
                                 )
                         else:
                             exit_code = self._run_script_live(
@@ -1033,6 +1191,60 @@ class JobManager:
             "running_count": running,
         }
 
+    def _run_env_script(self, code, env, log_file):
+        """Run admin-authored Python that can mutate the build environment.
+
+        The code runs in the server process with a mutable ``env`` dict in
+        scope (build parameters are already present in it as variables).
+        Whatever ``env`` holds afterwards becomes the environment for all
+        subsequent steps. Values are coerced to strings and a value of ``None``
+        unsets the variable. Returns 0 on success, 1 on error.
+        """
+        import io
+        import contextlib
+        import traceback
+
+        def _flush_output(buffer):
+            output = buffer.getvalue()
+            if output:
+                log_file.write(output)
+                if not output.endswith("\n"):
+                    log_file.write("\n")
+
+        namespace = {"env": env}
+        buffer = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(buffer), contextlib.redirect_stderr(buffer):
+                exec(code, namespace)
+        except Exception:
+            _flush_output(buffer)
+            log_file.write("[Error] Environment script raised an exception:\n")
+            log_file.write(traceback.format_exc())
+            log_file.flush()
+            return 1
+
+        result = namespace.get("env")
+        if not isinstance(result, dict):
+            _flush_output(buffer)
+            log_file.write(
+                "[Error] Environment script must leave 'env' as a dict of "
+                "variables.\n"
+            )
+            log_file.flush()
+            return 1
+
+        normalised = {}
+        for key, value in result.items():
+            if value is None:
+                continue
+            normalised[str(key)] = str(value)
+        env.clear()
+        env.update(normalised)
+
+        _flush_output(buffer)
+        log_file.flush()
+        return 0
+
     def _run_script_live(
         self, script_path, log_file, env, build_dir, job_name, build_id
     ):
@@ -1094,6 +1306,7 @@ class JobManager:
         build_dir,
         job_name,
         build_id,
+        mount_docker_socket=False,
     ):
         image = section.get("image", "")
         if not image:
@@ -1109,6 +1322,7 @@ class JobManager:
             build_dir,
             job_name,
             build_id,
+            mount_docker_socket,
         )
 
     def _run_local_docker_script_live(
@@ -1121,6 +1335,7 @@ class JobManager:
         build_dir,
         job_name,
         build_id,
+        mount_docker_socket=False,
     ):
         docker_env = self._docker_env(env, workspace_dir, build_dir)
         command = self._docker_run_command(
@@ -1129,6 +1344,7 @@ class JobManager:
             os.path.realpath(workspace_dir),
             os.path.realpath(build_dir),
             "/build/%s" % os.path.basename(script_path),
+            mount_docker_socket,
         )
         return self._run_process_live(
             command, log_file, os.environ.copy(), build_dir, job_name, build_id
@@ -1156,7 +1372,15 @@ class JobManager:
             return container_root + suffix
         return value
 
-    def _docker_run_command(self, image, env, workspace_dir, build_dir, script_path):
+    def _docker_run_command(
+        self,
+        image,
+        env,
+        workspace_dir,
+        build_dir,
+        script_path,
+        mount_docker_socket=False,
+    ):
         command = [
             "docker",
             "run",
@@ -1169,9 +1393,7 @@ class JobManager:
             "-w",
             "/workspace",
         ]
-        if self.get_server_config().get("mount_docker_socket", True) and os.path.exists(
-            "/var/run/docker.sock"
-        ):
+        if mount_docker_socket and os.path.exists("/var/run/docker.sock"):
             command.extend(["-v", "/var/run/docker.sock:/var/run/docker.sock"])
         for key in sorted(env):
             command.extend(["-e", "%s=%s" % (key, env[key])])
@@ -1183,7 +1405,14 @@ class JobManager:
         return "pipeline-%s-%s-%s" % (safe, build_id, section_index)
 
     def _start_shared_container(
-        self, container_name, image, env, workspace_dir, build_dir, log_file
+        self,
+        container_name,
+        image,
+        env,
+        workspace_dir,
+        build_dir,
+        log_file,
+        mount_docker_socket=False,
     ):
         docker_env = self._docker_env(env, workspace_dir, build_dir)
         ws = os.path.realpath(workspace_dir)
@@ -1201,9 +1430,7 @@ class JobManager:
             "-w",
             "/workspace",
         ]
-        if self.get_server_config().get("mount_docker_socket", True) and os.path.exists(
-            "/var/run/docker.sock"
-        ):
+        if mount_docker_socket and os.path.exists("/var/run/docker.sock"):
             command.extend(["-v", "/var/run/docker.sock:/var/run/docker.sock"])
         for key in sorted(docker_env):
             command.extend(["-e", "%s=%s" % (key, docker_env[key])])

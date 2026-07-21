@@ -16,6 +16,7 @@ __all__ = [
     "_normalize_queue_paused",
     "_normalize_queue_pause_message",
     "_normalize_script_header",
+    "_normalize_env_script",
     "_normalize_email_recipients",
     "_normalize_email_settings",
     "_normalize_mount_docker_socket",
@@ -23,6 +24,7 @@ __all__ = [
     "normalize_job_config",
     "_normalize_steps",
     "_normalize_step_image",
+    "normalize_template",
 ]
 
 
@@ -53,6 +55,11 @@ def _normalize_script_header(value):
     if not text.endswith("\n"):
         text += "\n"
     return text
+
+
+def _normalize_env_script(value):
+    text = str(value or "")
+    return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
 def _normalize_email_recipients(value):
@@ -100,7 +107,11 @@ def normalize_job_config(config):
         return None
     normalized = dict(config)
     normalized["steps"] = _normalize_steps(config)
+    normalized["env_script"] = _normalize_env_script(config.get("env_script"))
     normalized["credentials"] = config.get("credentials") or []
+    normalized["mount_docker_socket"] = _normalize_mount_docker_socket(
+        config.get("mount_docker_socket")
+    )
     raw_labels = config.get("labels")
     if isinstance(raw_labels, list):
         normalized["labels"] = [
@@ -178,6 +189,7 @@ def _normalize_steps(config):
                     "script": script,
                     "image": _normalize_step_image(section),
                     "reuse_container": bool(section.get("reuse_container", False)),
+                    "template": str(section.get("template") or "").strip(),
                 }
             )
     return result
@@ -191,3 +203,35 @@ def _normalize_step_image(section):
     if isinstance(raw, dict):
         return str(raw.get("image") or "").strip()
     return ""
+
+
+def normalize_template(config):
+    if not config:
+        return None
+    name = str(config.get("name") or "").strip()
+    if not name:
+        return None
+    script = str(config.get("script") or "")
+    script = script.replace("\r\n", "\n").replace("\r", "\n")
+    env_vars = []
+    raw_env = config.get("env_vars")
+    if isinstance(raw_env, list):
+        for item in raw_env:
+            if not isinstance(item, dict):
+                continue
+            var_name = str(item.get("name") or "").strip()
+            if not var_name:
+                continue
+            env_vars.append(
+                {
+                    "name": var_name,
+                    "description": str(item.get("description") or "").strip(),
+                }
+            )
+    return {
+        "name": name,
+        "description": str(config.get("description") or "").strip(),
+        "image": str(config.get("image") or "").strip() or "alpine:latest",
+        "script": script,
+        "env_vars": env_vars,
+    }

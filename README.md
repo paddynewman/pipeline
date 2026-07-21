@@ -44,6 +44,7 @@ This will install Pipeline in /usr/libexec/pipeline and data will be stored in
 - Log in, create and manage user accounts.
 - Simple role-based access controls (administrators, users and viewers).
 - Create jobs based on simple scripted steps.
+- Use admin-managed step templates to pre-fill a step's container and script.
 - Scripted steps run in ephemeral Docker containers.
 - Re-use a container (and its state) in multiple steps.
   - E.g., install a package in step one, use it in step two.
@@ -52,11 +53,14 @@ This will install Pipeline in /usr/libexec/pipeline and data will be stored in
   - Allows you to build Docker images.
 - Configure job parameters with regular expression validation.
 - Configure credentials and use them in jobs.
+- Manipulate the build environment with a Python script before steps run.
 - Trigger jobs manually or with a cron-style schedule.
 - Re-run prevous builds of a job.
 - Checkout Git repositories.
 - Poll Git repositories for changes and trigger builds.
 - Live log updates for long-running jobs.
+- Live dashboard and build history updates without reloading.
+- Live queue status indicator showing running and queued jobs.
 - View or download files created by jobs.
 - Automatically remove old builds of a job.
 - Organise and filter jobs using labels.
@@ -76,4 +80,3 @@ Viewing a job's details and build history:
 Viewing a build and its logs:
 
 ![build](build.png)
-
