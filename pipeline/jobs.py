@@ -227,6 +227,22 @@ class JobManager:
     def _workspace_dir(self, job_name):
         return os.path.join(self._job_dir(job_name), "workspace")
 
+    def _git_poll_log_path(self, job_name):
+        return os.path.join(self._job_dir(job_name), "gitpoll.log")
+
+    def get_git_poll_log_max_lines(self):
+        cfg = self.get_server_config()
+        return _normalize_git_poll_log_max_lines(
+            cfg.get("git_poll_log_max_lines", DEFAULT_GIT_POLL_LOG_MAX_LINES)
+        )
+
+    def get_git_poll_log(self, job_name):
+        path = self._git_poll_log_path(job_name)
+        if not os.path.isfile(path):
+            return ""
+        with open(path, errors="replace", newline="") as f:
+            return f.read()
+
     def list_workspace_files(self, job_name):
         workspace = self._workspace_dir(job_name)
         if not os.path.isdir(workspace):
@@ -473,6 +489,7 @@ class JobManager:
                 "default_script_header": _normalize_script_header(None),
                 "email_notifications": _normalize_email_settings(None),
                 "git_poll_interval": 300,
+                "git_poll_log_max_lines": DEFAULT_GIT_POLL_LOG_MAX_LINES,
             }
         with open(path) as f:
             cfg = json.load(f)
@@ -487,6 +504,9 @@ class JobManager:
         )
         if "git_poll_interval" not in cfg:
             cfg["git_poll_interval"] = 300
+        cfg["git_poll_log_max_lines"] = _normalize_git_poll_log_max_lines(
+            cfg.get("git_poll_log_max_lines", DEFAULT_GIT_POLL_LOG_MAX_LINES)
+        )
         cfg["default_script_header"] = _normalize_script_header(
             cfg.get("default_script_header")
         )
@@ -503,6 +523,9 @@ class JobManager:
         cfg["queue_paused"] = _normalize_queue_paused(cfg.get("queue_paused"))
         cfg["queue_pause_message"] = _normalize_queue_pause_message(
             cfg.get("queue_pause_message")
+        )
+        cfg["git_poll_log_max_lines"] = _normalize_git_poll_log_max_lines(
+            cfg.get("git_poll_log_max_lines", DEFAULT_GIT_POLL_LOG_MAX_LINES)
         )
         cfg["default_script_header"] = _normalize_script_header(
             cfg.get("default_script_header")

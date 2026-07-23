@@ -11,6 +11,7 @@ from .jobs import (
     dashboard,
     job_detail,
     job_form,
+    gitpoll_log,
     workspace,
 )
 from .builds import build_detail, build_form

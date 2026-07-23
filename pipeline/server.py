@@ -86,6 +86,8 @@ ROUTES = [
     Route("GET", "/jobs/new", "_get_job_new", roles=("admin",)),
     Route("GET", "/jobs/{name}", "_get_job_detail"),
     Route("GET", "/jobs/{name}/builds.json", "_get_job_builds_status"),
+    Route("GET", "/jobs/{name}/gitpoll-log", "_get_gitpoll_log"),
+    Route("GET", "/jobs/{name}/gitpoll-log.txt", "_get_gitpoll_log_text"),
     Route("GET", "/jobs/{name}/edit", "_get_job_edit", roles=("admin",)),
     Route(
         "GET",
@@ -253,6 +255,8 @@ def make_handler(manager, auth):
             if path in ("/api/queue", "/api/dashboard"):
                 return True
             if path.endswith("/builds.json") or path.endswith("/status"):
+                return True
+            if path.endswith("/gitpoll-log.txt"):
                 return True
             return bool(re.search(r"/log/\d+$", path))
 
@@ -514,6 +518,26 @@ def make_handler(manager, auth):
             builds = self._manager.list_builds(name)
             job["weather"] = compute_weather(builds)
             self._render(ui.job_detail, job, builds)
+
+        def _get_gitpoll_log(self, name):
+            job = self._load_job_or_404(name)
+            if job is None:
+                return
+            if (job.get("trigger") or {}).get("type") != "gitpoll":
+                self._send_404()
+                return
+            log_text = self._manager.get_git_poll_log(name)
+            self._render(ui.gitpoll_log, job, log_text)
+
+        def _get_gitpoll_log_text(self, name):
+            if not _valid_job_name(name):
+                self._send_text("", 404)
+                return
+            job = self._manager.get_job(name)
+            if not job or (job.get("trigger") or {}).get("type") != "gitpoll":
+                self._send_text("", 404)
+                return
+            self._send_text(self._manager.get_git_poll_log(name))
 
         def _get_job_builds_status(self, name):
             if not _valid_job_name(name):
@@ -1297,6 +1321,7 @@ def make_handler(manager, auth):
             default_script_header = form.get("default_script_header", "")
             queue_paused = form.get("queue_paused") == "1"
             queue_pause_message = form.get("queue_pause_message", "").strip()
+            git_poll_log_max_lines = form.get("git_poll_log_max_lines", "").strip()
             email_settings = {
                 "recipients": form.get("notification_recipients", ""),
                 "from_address": form.get("notification_from_address", "").strip(),
@@ -1316,6 +1341,7 @@ def make_handler(manager, auth):
                 cfg["queue_paused"] = queue_paused
                 cfg["queue_pause_message"] = queue_pause_message
                 cfg["email_notifications"] = email_settings
+                cfg["git_poll_log_max_lines"] = git_poll_log_max_lines
                 creds = self._manager.list_credentials()
                 self._render(
                     ui.settings,
@@ -1333,6 +1359,7 @@ def make_handler(manager, auth):
                 cfg["queue_paused"] = queue_paused
                 cfg["queue_pause_message"] = queue_pause_message
                 cfg["email_notifications"] = email_settings
+                cfg["git_poll_log_max_lines"] = git_poll_log_max_lines
                 creds = self._manager.list_credentials()
                 self._render(
                     ui.settings,
@@ -1353,6 +1380,7 @@ def make_handler(manager, auth):
                 cfg["queue_paused"] = queue_paused
                 cfg["queue_pause_message"] = queue_pause_message
                 cfg["email_notifications"] = email_settings
+                cfg["git_poll_log_max_lines"] = git_poll_log_max_lines
                 creds = self._manager.list_credentials()
                 self._render(
                     ui.settings,
@@ -1373,6 +1401,7 @@ def make_handler(manager, auth):
                 cfg["queue_paused"] = queue_paused
                 cfg["queue_pause_message"] = queue_pause_message
                 cfg["email_notifications"] = email_settings
+                cfg["git_poll_log_max_lines"] = git_poll_log_max_lines
                 creds = self._manager.list_credentials()
                 self._render(
                     ui.settings,
@@ -1388,6 +1417,7 @@ def make_handler(manager, auth):
             cfg["queue_paused"] = queue_paused
             cfg["queue_pause_message"] = queue_pause_message
             cfg["email_notifications"] = email_settings
+            cfg["git_poll_log_max_lines"] = git_poll_log_max_lines
             self._manager.save_server_config(cfg)
             self._redirect("/settings")
 

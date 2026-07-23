@@ -5,6 +5,7 @@ DEFAULT_MAX_BUILDS = 10
 DEFAULT_MAX_CONCURRENT_JOBS = 2
 DEFAULT_QUEUE_PAUSE_MESSAGE = "Job queue is paused."
 DEFAULT_SMTP_PORT = 587
+DEFAULT_GIT_POLL_LOG_MAX_LINES = 2000
 
 __all__ = [
     "DEFAULT_SCRIPT_HEADER",
@@ -12,7 +13,9 @@ __all__ = [
     "DEFAULT_MAX_CONCURRENT_JOBS",
     "DEFAULT_QUEUE_PAUSE_MESSAGE",
     "DEFAULT_SMTP_PORT",
+    "DEFAULT_GIT_POLL_LOG_MAX_LINES",
     "_normalize_max_concurrent_jobs",
+    "_normalize_git_poll_log_max_lines",
     "_normalize_queue_paused",
     "_normalize_queue_pause_message",
     "_normalize_script_header",
@@ -34,6 +37,14 @@ def _normalize_max_concurrent_jobs(value):
     except (TypeError, ValueError):
         parsed = DEFAULT_MAX_CONCURRENT_JOBS
     return max(1, parsed)
+
+
+def _normalize_git_poll_log_max_lines(value):
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = DEFAULT_GIT_POLL_LOG_MAX_LINES
+    return max(100, parsed)
 
 
 def _normalize_queue_paused(value):

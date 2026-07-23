@@ -1,4 +1,5 @@
 from .layout import *  # noqa: F401,F403
+from .builds import _render_log_sections
 
 
 _JOB_DETAIL_POLL_JS = """
@@ -274,6 +275,11 @@ def job_detail(ctx, job, builds):
         if permissions["can_view_workspaces"]
         else ""
     )
+    gitpoll_btn = (
+        f'<a href="/jobs/{esc(name)}/gitpoll-log" class="btn btn-secondary">Git Polling Log</a>'
+        if (job.get("trigger") or {}).get("type") == "gitpoll"
+        else ""
+    )
     edit_btn = (
         f'<a href="/jobs/{esc(name)}/edit" class="btn btn-secondary">Edit</a>'
         if permissions["can_manage_jobs"]
@@ -305,6 +311,7 @@ def job_detail(ctx, job, builds):
   <div class="actions">
     {build_btn}
     {workspace_btn}
+    {gitpoll_btn}
     {edit_btn}
   </div>
 </div>
@@ -380,6 +387,77 @@ def job_detail(ctx, job, builds):
         """
     )
     return _page(ctx, name, body, extra_js=poll_header + _JOB_DETAIL_POLL_JS)
+
+
+def gitpoll_log(ctx, job, log_text):
+    name = job["name"]
+    trigger = job.get("trigger") or {}
+    interval = trigger.get("interval", "")
+    git_cfg = job.get("git") or {}
+    url = git_cfg.get("url", "")
+    branch = git_cfg.get("branch", "") or "main"
+    command = f"git ls-remote {url} refs/heads/{branch}".strip() if url else ""
+    bc = _breadcrumb(
+        ("Dashboard", "/"), (name, f"/jobs/{name}"), ("Git Polling Log", None)
+    )
+    interval_html = (
+        f' <span class="text-muted" style="font-size:13px">(polling every {esc(str(interval))}s)</span>'
+        if interval
+        else ""
+    )
+    header = (
+        f'<div class="page-header">'
+        f"<h1>Git Polling Log: {esc(name)}{interval_html}</h1>"
+        f'<div class="actions">'
+        f'<a href="/jobs/{esc(name)}/gitpoll-log.txt" class="btn btn-secondary">View as plain text</a>'
+        f'<a href="/jobs/{esc(name)}" class="btn btn-secondary">Back to Job</a>'
+        f"</div></div>"
+    )
+    section = {
+        "name": "Git Polling",
+        "details": "",
+        "text": log_text,
+        "script": command,
+    }
+    empty_html = (
+        '<div class="empty-state" id="gitpoll-empty" style="padding:20px 0"'
+        + (" hidden" if log_text else "")
+        + "><p>No polling activity recorded yet.</p></div>"
+    )
+    body = bc + header + empty_html + _render_log_sections([section])
+    poll_js = _html(
+        f"""
+        <script>
+        (function() {{
+          var url = {json_str(f"/jobs/{name}/gitpoll-log.txt")};
+          var el = document.getElementById("log-section-0");
+          var empty = document.getElementById("gitpoll-empty");
+          if (!el) return;
+          function poll() {{
+            fetch(url + "?_=" + Date.now())
+              .then(function(r) {{ return r.text(); }})
+              .then(function(text) {{
+                var atBottom = el.scrollTop + el.clientHeight >=
+                  el.scrollHeight - 20;
+                if (text) {{
+                  el.classList.add("log-wrap");
+                  el.textContent = text;
+                  if (empty) empty.hidden = true;
+                  if (atBottom) el.scrollTop = el.scrollHeight;
+                }} else {{
+                  el.classList.remove("log-wrap");
+                  el.textContent = "";
+                  if (empty) empty.hidden = false;
+                }}
+              }})
+              .catch(function() {{}});
+          }}
+          setInterval(poll, 3000);
+        }})();
+        </script>
+        """
+    )
+    return _page(ctx, f"Git Polling Log: {name}", body, extra_js=poll_js)
 
 
 def workspace(ctx, job, files):

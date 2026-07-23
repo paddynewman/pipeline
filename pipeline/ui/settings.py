@@ -6,6 +6,7 @@ def settings(ctx, cfg, available_creds=None, error=None):
     error_html = f'<div class="alert alert-danger">{esc(error)}</div>' if error else ""
     max_builds = esc(str(cfg.get("max_builds", 10)))
     max_concurrent_jobs = esc(str(cfg.get("max_concurrent_jobs", 2)))
+    git_poll_log_max_lines = esc(str(cfg.get("git_poll_log_max_lines", 2000)))
     queue_paused = bool(cfg.get("queue_paused", False))
     queue_pause_message = esc(cfg.get("queue_pause_message", "Job queue is paused."))
     default_script_header = esc(cfg.get("default_script_header", ""))
@@ -59,6 +60,10 @@ def settings(ctx, cfg, available_creds=None, error=None):
               <div class="form-group">
                 <label for="max-concurrent-jobs">Max concurrent jobs <span class="hint">(server-wide queue limit; default: 2)</span></label>
                 <input type="number" id="max-concurrent-jobs" name="max_concurrent_jobs" value="{max_concurrent_jobs}" min="1" style="max-width:120px">
+              </div>
+              <div class="form-group">
+                <label for="git-poll-log-max-lines">Git poll log size <span class="hint">(max lines kept per job's Git polling log; default: 2000, min: 100)</span></label>
+                <input type="number" id="git-poll-log-max-lines" name="git_poll_log_max_lines" value="{git_poll_log_max_lines}" min="100" style="max-width:120px">
               </div>
               <div class="form-group">
                 <label style="display:flex;align-items:center;gap:8px;font-weight:normal;cursor:pointer">
